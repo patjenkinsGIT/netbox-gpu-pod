@@ -1,0 +1,6 @@
+netbox-docker/
+.env
+*.token
+__pycache__/
+.venv/
+.DS_Store
