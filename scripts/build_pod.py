@@ -17,6 +17,7 @@ Slice 1 of 4: racks. Device types, devices and power come next.
 
 import argparse
 import os
+import re
 import sys
 
 import pynetbox
@@ -54,6 +55,8 @@ class Runner:
         self.existing = 0
         self.planned = 0
         self.skipped = 0
+        self.updated = 0
+        self.planned_updates = 0
 
     def ensure(self, endpoint, lookup, payload, label, depends_on=()):
         """Return the object described by `lookup`, creating it if absent.
@@ -100,8 +103,10 @@ class Runner:
         print(f"existing: {self.existing}")
         if self.dry_run:
             print(f"would create: {self.planned}")
+            print(f"would update: {self.planned_updates}")
         else:
             print(f"created: {self.created}")
+            print(f"updated: {self.updated}")
         if self.skipped:
             print(f"skipped: {self.skipped}")
 
@@ -143,28 +148,52 @@ def ensure_components(run, endpoint, device_type, wanted, kind):
 
     label = f"{device_type.model}: {len(wanted)} {kind}"
 
-    existing = {
-        t.name for t in endpoint.all()
+    by_name = {
+        t.name: t for t in endpoint.all()
         if t.device_type and t.device_type.id == device_type.id
     }
-    missing = [w for w in wanted if w["name"] not in existing]
+    missing = [w for w in wanted if w["name"] not in by_name]
 
-    if not missing:
-        run.existing += len(wanted)
-        print(f"  =  {label}")
-        return
+    # Existence is not convergence. A template can be present with the wrong
+    # field values, and a create-only generator reports success while the model
+    # is wrong -- which is how maximum_draw=34500 survived on the rPDU input
+    # port and zeroed 33 racks' utilisation behind healthy cables.
+    drifted = []
+    for w in wanted:
+        current = by_name.get(w["name"])
+        if current is None:
+            continue
+        diff = {
+            field: value for field, value in w.items()
+            if field != "name" and field_value(current, field) != value
+        }
+        if diff:
+            drifted.append((current, diff))
 
-    if run.dry_run:
+    if missing and not run.dry_run:
+        # One bulk POST rather than a request per component -- 64 interfaces on
+        # a QM9700 is otherwise 64 round trips.
+        endpoint.create([{**m, "device_type": device_type.id} for m in missing])
+        run.created += len(missing)
+        print(f"  +  {device_type.model}: {len(missing)} {kind} created")
+    elif missing:
         run.planned += len(missing)
         print(f"  +  {device_type.model}: {len(missing)} {kind}  (would create)")
-        return
 
-    # One bulk POST rather than a request per component -- 64 interfaces on a
-    # QM9700 is otherwise 64 round trips.
-    endpoint.create([{**m, "device_type": device_type.id} for m in missing])
-    run.created += len(missing)
-    run.existing += len(wanted) - len(missing)
-    print(f"  +  {device_type.model}: {len(missing)} {kind} created")
+    for current, diff in drifted:
+        summary = ", ".join(f"{k}={v!r}" for k, v in diff.items())
+        if run.dry_run:
+            run.planned_updates += 1
+            print(f"  ~  {device_type.model}/{current.name}: {summary}  (would update)")
+        else:
+            current.update(diff)
+            run.updated += 1
+            print(f"  ~  {device_type.model}/{current.name}: {summary}")
+
+    unchanged = len(wanted) - len(missing) - len(drifted)
+    run.existing += unchanged
+    if unchanged and not missing and not drifted:
+        print(f"  =  {label}")
 
 
 def ensure_outlets(run, device_type, wanted):
@@ -283,6 +312,265 @@ def build_devices(run, spec):
                     name,
                     depends_on=(device_type, role, rack),
                 )
+
+
+def field_value(obj, field):
+    """Read a field for comparison, unwrapping pynetbox choice records.
+
+    Choice fields (type, airflow...) come back as a Record carrying .value;
+    plain fields come back as themselves. Comparing the Record directly
+    against a spec string would report drift on every single run.
+    """
+    value = getattr(obj, field, None)
+    return getattr(value, "value", value)
+
+
+def sync_device_power_ports(run):
+    """Push device-type power-port draw values down onto existing devices.
+
+    NetBox stamps components onto a device from its type at CREATION time and
+    never revisits them. Fixing a template therefore leaves every already-built
+    device wrong -- the asymmetry that bit this project three times. This makes
+    the type authoritative after the fact.
+    """
+    print("\nsync device power ports to their device types")
+
+    templates = {}
+    for t in run.nb.dcim.power_port_templates.all():
+        if t.device_type:
+            templates[(t.device_type.id, t.name)] = t
+
+    # A power port's .device is a BRIEF nested record -- id, name, url and
+    # nothing else. It carries no device_type, so the mapping has to come from
+    # the devices endpoint. Fetched once rather than per port.
+    device_type_of = {d.id: d.device_type.id for d in run.nb.dcim.devices.all()}
+
+    changed = 0
+    for port in run.nb.dcim.power_ports.all():
+        device_type_id = device_type_of.get(port.device.id)
+        if device_type_id is None:
+            continue
+        template = templates.get((device_type_id, port.name))
+        if template is None:
+            continue
+        diff = {}
+        for field in ("maximum_draw", "allocated_draw"):
+            wanted = field_value(template, field)
+            if field_value(port, field) != wanted:
+                diff[field] = wanted
+        if not diff:
+            continue
+        summary = ", ".join(f"{k}={v!r}" for k, v in diff.items())
+        if run.dry_run:
+            run.planned_updates += 1
+            print(f"  ~  {port.device.name}/{port.name}: {summary}  (would update)")
+        else:
+            port.update(diff)
+            run.updated += 1
+            changed += 1
+
+    if not changed and not run.dry_run:
+        print("  =  all device power ports match their templates")
+    elif changed:
+        print(f"  ~  {changed} device power ports updated")
+
+
+def natural_key(name):
+    """Sort outlet1 < outlet2 < outlet10, not outlet1 < outlet10 < outlet2."""
+    match = re.search(r"(\d+)$", name)
+    if match:
+        return (name[: match.start()], int(match.group(1)))
+    return (name, 0)
+
+
+def assign_sources(num_ports, device_index):
+    """Which of the three rack rPDUs each of a device's PSUs plugs into.
+
+    Six supplies spread a,a,b,b,c,c -- two per source, so losing any one
+    source costs exactly two supplies, leaving the four a DGX H100 needs.
+
+    Two supplies cannot reach all three sources, so the starting point
+    rotates per device. Without that rotation every 2-PSU switch would land
+    on a and b, and source c would carry nothing.
+    """
+    letters = ["a", "b", "c"]
+    if num_ports >= 3:
+        return [letters[(j * 3) // num_ports] for j in range(num_ports)]
+    start = device_index % 3
+    return [letters[(start + j) % 3] for j in range(num_ports)]
+
+
+def build_power(run, spec):
+    """Power panels, one feed per panel per rack, and all power cabling."""
+
+    site = run.nb.dcim.sites.get(slug=spec["site"]["slug"])
+    location = run.nb.dcim.locations.get(slug=spec["location"]["slug"])
+
+    print("\npower panels")
+    panels = {}
+    for panel_name in spec.get("power_panels", []):
+        panels[panel_name] = run.ensure(
+            run.nb.dcim.power_panels,
+            {"name": panel_name, "site_id": site.id},
+            {
+                "name": panel_name,
+                "site": site.id,
+                "location": location.id if location else None,
+            },
+            panel_name,
+        )
+
+    feed_spec = spec.get("power_feeds")
+    if not feed_spec:
+        return
+
+    print("\npower feeds")
+    feeds_missing = False
+    racks = [r["name"] for r in spec["racks"]]
+    for rack_name in racks:
+        rack = run.nb.dcim.racks.get(name=rack_name, site_id=site.id)
+        for panel_name, letter in zip(feed_spec["panels"], feed_spec["letters"]):
+            panel = panels.get(panel_name)
+            name = feed_spec["name_template"].format(rack=rack_name, letter=letter)
+            feed = run.ensure(
+                run.nb.dcim.power_feeds,
+                {"name": name, "rack_id": rack.id} if rack else {"name": name},
+                {
+                    "name": name,
+                    "power_panel": panel.id if panel else None,
+                    "rack": rack.id if rack else None,
+                    "status": feed_spec["status"],
+                    "type": feed_spec["type"],
+                    "supply": feed_spec["supply"],
+                    "phase": feed_spec["phase"],
+                    "voltage": feed_spec["voltage"],
+                    "amperage": feed_spec["amperage"],
+                    "max_utilization": feed_spec["max_utilization"],
+                },
+                name,
+                depends_on=(rack, panel),
+            )
+            if feed is None or isinstance(feed, Planned):
+                feeds_missing = True
+
+    if run.dry_run and feeds_missing:
+        # Cabling terminates on real feed, outlet and port ids. If any feed is
+        # still only planned, previewing a cable count would mean inventing
+        # relationships between objects that have no ids -- say so instead.
+        # Note this tests for MISSING FEEDS specifically, not for any pending
+        # change: a pending attribute update elsewhere does not stop us
+        # previewing cabling accurately.
+        print("\npower cabling")
+        print("  .  skipped in dry run until feeds exist (re-run --dry-run after apply)")
+        return
+
+    build_power_cabling(run, spec, site)
+
+
+def build_power_cabling(run, spec, site):
+    """Cable PDU inputs to feeds, then every device PSU to a PDU outlet.
+
+    Idempotent by checking whether each termination already carries a cable,
+    and by always taking the lowest-numbered free outlet -- so re-runs are
+    stable and the hand-cabled C01 is left exactly as it is.
+    """
+    print("\npower cabling")
+
+    # Fetch once and group client-side rather than filtering per device.
+    all_devices = list(run.nb.dcim.devices.all())
+    all_ports = list(run.nb.dcim.power_ports.all())
+    all_outlets = list(run.nb.dcim.power_outlets.all())
+    all_feeds = list(run.nb.dcim.power_feeds.all())
+
+    feeds_by_name = {f.name: f for f in all_feeds}
+    ports_by_device = {}
+    for p in all_ports:
+        ports_by_device.setdefault(p.device.id, []).append(p)
+    outlets_by_device = {}
+    for o in all_outlets:
+        outlets_by_device.setdefault(o.device.id, []).append(o)
+
+    pending = []
+    used_outlets = {o.id for o in all_outlets if o.cable}
+
+    for rack_spec in spec["racks"]:
+        rack_name = rack_spec["name"]
+        rack = run.nb.dcim.racks.get(name=rack_name, site_id=site.id)
+        in_rack = [d for d in all_devices if d.rack and d.rack.id == rack.id]
+
+        pdus = {}
+        for d in in_rack:
+            if d.name.startswith(f"pdu-{rack_name.lower()}-"):
+                pdus[d.name[-1]] = d
+        if len(pdus) != 3:
+            print(f"  .  {rack_name}: expected 3 rPDUs, found {len(pdus)} -- skipped")
+            run.skipped += 1
+            continue
+
+        # rPDU input -> power feed
+        for letter, pdu in sorted(pdus.items()):
+            inputs = [p for p in ports_by_device.get(pdu.id, []) if p.name == "input"]
+            if not inputs or inputs[0].cable:
+                continue
+            feed = feeds_by_name.get(f"{rack_name}-{letter.upper()}")
+            if feed is None or feed.cable:
+                continue
+            pending.append({
+                "a_terminations": [{"object_type": "dcim.powerfeed", "object_id": feed.id}],
+                "b_terminations": [{"object_type": "dcim.powerport", "object_id": inputs[0].id}],
+                "status": "connected",
+                "type": "power",
+            })
+
+        # device PSU -> rPDU outlet
+        powered = sorted(
+            [d for d in in_rack if not d.name.startswith(f"pdu-{rack_name.lower()}-")],
+            key=lambda d: natural_key(d.name),
+        )
+        for device_index, device in enumerate(powered):
+            ports = sorted(
+                ports_by_device.get(device.id, []), key=lambda p: natural_key(p.name)
+            )
+            if not ports:
+                continue
+            for port, letter in zip(ports, assign_sources(len(ports), device_index)):
+                if port.cable:
+                    continue
+                pdu = pdus[letter]
+                free = [
+                    o for o in sorted(
+                        outlets_by_device.get(pdu.id, []), key=lambda o: natural_key(o.name)
+                    )
+                    if o.id not in used_outlets
+                ]
+                if not free:
+                    raise RuntimeError(
+                        f"{pdu.name} has no free outlet for {device.name}/{port.name}"
+                    )
+                outlet = free[0]
+                used_outlets.add(outlet.id)
+                pending.append({
+                    "a_terminations": [{"object_type": "dcim.poweroutlet", "object_id": outlet.id}],
+                    "b_terminations": [{"object_type": "dcim.powerport", "object_id": port.id}],
+                    "status": "connected",
+                    "type": "power",
+                })
+
+    if not pending:
+        print("  =  all power cabling present")
+        return
+
+    if run.dry_run:
+        run.planned += len(pending)
+        print(f"  +  {len(pending)} power cables  (would create)")
+        return
+
+    # Batched so one oversized payload cannot fail the whole set.
+    for start in range(0, len(pending), 100):
+        batch = pending[start:start + 100]
+        run.nb.dcim.cables.create(batch)
+        run.created += len(batch)
+        print(f"  +  {len(batch)} power cables created")
 
 
 def build_device_types(run, spec):
@@ -510,6 +798,8 @@ def main():
         build_racks(run, spec)
         build_device_types(run, spec)
         build_devices(run, spec)
+        sync_device_power_ports(run)
+        build_power(run, spec)
     except requests.exceptions.ConnectionError:
         print(f"\nFAIL: lost connection to {info['url']}", file=sys.stderr)
         return 1

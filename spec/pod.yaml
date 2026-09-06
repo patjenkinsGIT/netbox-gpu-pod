@@ -112,7 +112,14 @@ device_types:
     airflow: passive
     description: 0U vertical rPDU, 415 VAC 60 A three-phase
     power_ports:
+      # The nulls are EXPLICIT, not omissions. Declaring them means the
+      # reconcile pass can see and correct a value that has drifted -- an
+      # omitted field would just mean "don't care", which is how a stale
+      # maximum_draw of 34500 survived on this template and silently zeroed
+      # the utilisation on all 33 generated rPDUs.
       - name: input
+        maximum_draw: null
+        allocated_draw: null
         description: 415 VAC 60 A three-phase, hardwired to panel
     power_outlets:
       - name: outlet[1-24]
@@ -252,6 +259,43 @@ racks:
   - {name: N02, role: network}
   - {name: M01, role: management}
   - {name: S01, role: storage}
+
+# SOURCED: minimum three power sources per rack, N+1 where N=2, each source
+# sized to support 50% of total peak load. Modelled as three separate panels
+# rather than one panel with three breakers, because the guide's stronger
+# option is three discrete UPS systems on independent distribution paths --
+# one panel would look redundant while sharing a single point of failure.
+power_panels:
+  - Panel A
+  - Panel B
+  - Panel C
+
+# SOURCED: preferred scheme is 415 VAC, 60 A, three-phase, N+1, 80% derate.
+# NetBox computes capacity as 415 x 60 x sqrt(3) x 0.80 = 34,501 VA. NVIDIA's
+# table lists the same circuit at 32.7 kW -- a real discrepancy from a
+# different derating assumption. Both figures are reported in the README
+# rather than silently picking one.
+power_feeds:
+  name_template: "{rack}-{letter}"
+  panels: [Panel A, Panel B, Panel C]
+  letters: [A, B, C]
+  supply: ac
+  phase: three-phase
+  voltage: 415
+  amperage: 60
+  max_utilization: 80
+  type: primary
+  status: active
+
+# Every device PSU is cabled to an outlet on one of its rack's three rPDUs.
+#
+# A 6-PSU DGX H100 spreads a,a,b,b,c,c -- two supplies per source, so losing
+# any one source costs exactly two supplies and leaves the four the system
+# requires (4+2). A 2-PSU switch cannot touch all three sources, so its
+# starting source rotates per device; otherwise every switch would land on
+# a and b and source c would sit idle.
+power_cabling:
+  outlets_per_pdu: 24
 
 device_roles:
   - {name: GPU Compute Node, slug: gpu-compute-node, color: "9c27b0"}
