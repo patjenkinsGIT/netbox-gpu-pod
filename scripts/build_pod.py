@@ -27,6 +27,34 @@ import yaml
 from netbox_client import REPO_ROOT, ConfigError, connect
 
 
+def scalar_diff(current, payload):
+    """Declared fields whose stored value differs, excluding foreign keys.
+
+    Foreign keys are skipped deliberately: comparing them means unwrapping
+    nested records and reasoning about ids that do not drift in practice,
+    and getting it wrong would make the reconciler rewrite relationships on
+    every run. Scalars -- u_height, position, description, status -- are
+    where spec drift actually shows up.
+    """
+    diff = {}
+    for field, declared in payload.items():
+        value = getattr(current, field, None)
+        if hasattr(value, "id"):
+            continue
+        if hasattr(value, "value"):
+            value = value.value
+        # NetBox returns some numerics as strings or Decimals; compare
+        # numerically first so 8 and "8.00" do not read as drift forever.
+        try:
+            if float(value) == float(declared):
+                continue
+        except (TypeError, ValueError):
+            pass
+        if value != declared:
+            diff[field] = declared
+    return diff
+
+
 class Planned:
     """Stands in for an object a dry run would create but has not.
 
@@ -84,8 +112,22 @@ class Runner:
 
         obj = endpoint.get(**lookup)
         if obj is not None:
-            self.existing += 1
-            print(f"  =  {label}")
+            # Existence is not convergence -- reconcile declared scalar fields
+            # too, or a device type whose u_height changed in the spec stays
+            # wrong forever while the run reports success.
+            diff = scalar_diff(obj, payload)
+            if diff:
+                summary = ", ".join(f"{k}={v!r}" for k, v in diff.items())
+                if self.dry_run:
+                    self.planned_updates += 1
+                    print(f"  ~  {label}: {summary}  (would update)")
+                else:
+                    obj.update(diff)
+                    self.updated += 1
+                    print(f"  ~  {label}: {summary}")
+            else:
+                self.existing += 1
+                print(f"  =  {label}")
             return obj
 
         if self.dry_run:
@@ -276,6 +318,7 @@ def build_devices(run, spec):
         device_type = run.nb.dcim.device_types.get(slug=group["device_type"])
         role = roles.get(group["role"])
 
+        entries = []
         index = 0
         for rack_name in group["racks"]:
             rack = run.nb.dcim.racks.get(name=rack_name, site_id=site.id)
@@ -299,19 +342,53 @@ def build_devices(run, spec):
                     "status": "active",
                 }
 
-                # 0U devices have no elevation slot; position and face stay unset.
-                if "start_position" in group:
+                # An explicit list wins over start/step, because real layouts
+                # are not always a uniform stride: NVIDIA's compute rack puts
+                # a 3U airflow gap between the second and third DGX, which no
+                # single step value can express.
+                # 0U devices omit both, and their position and face stay unset.
+                if "positions" in group:
+                    payload["position"] = group["positions"][n - 1]
+                    payload["face"] = group.get("face", "front")
+                elif "start_position" in group:
                     step = group.get("position_step", 1)
                     payload["position"] = group["start_position"] + (n - 1) * step
                     payload["face"] = group.get("face", "front")
 
-                run.ensure(
-                    run.nb.dcim.devices,
-                    {"name": name},
-                    payload,
-                    name,
-                    depends_on=(device_type, role, rack),
-                )
+                entries.append((name, rack, payload))
+
+        # Pre-pass: vacate any rack unit that is about to change.
+        #
+        # NetBox rejects a device whose position overlaps another, and a stack
+        # shifting upward collides with its own neighbour -- moving a DGX from
+        # U1 to U3 overlaps the system still sitting at U9. Moving top-down
+        # would work for an upward shift and fail for a downward one, so
+        # instead every mover is set to no position first, then placed. Two
+        # calls per device, and correct regardless of which way things move.
+        if not run.dry_run:
+            movers = []
+            for name, _, payload in entries:
+                target = payload.get("position")
+                if target is None:
+                    continue
+                current = run.nb.dcim.devices.get(name=name)
+                if current is None or current.position is None:
+                    continue
+                if float(current.position) != float(target):
+                    movers.append(current)
+            if movers:
+                print(f"  .  vacating {len(movers)} positions before re-placing")
+                for device in movers:
+                    device.update({"position": None})
+
+        for name, rack, payload in entries:
+            run.ensure(
+                run.nb.dcim.devices,
+                {"name": name},
+                payload,
+                name,
+                depends_on=(device_type, role, rack),
+            )
 
 
 def field_value(obj, field):
@@ -702,6 +779,28 @@ def build_fabric_cabling(run, spec):
             port(f"oob-{switch:02d}", f"eth{switch_port}"),
             oob,
             f"{node}/bmc",
+        )
+
+    # 6. UFM appliances: management ethernet only.
+    #
+    # Their InfiniBand ports are deliberately NOT cabled. A strictly 1:1
+    # non-blocking fabric consumes every port -- 32 down + 32 up on each leaf,
+    # and 8 leaves x 8 links fills all 64 ports on each spine -- so there is no
+    # free port to attach them to. Inventing one would quietly break the
+    # non-blocking property the topology exists to provide. Real deployments
+    # reserve fabric ports for management at the cost of slight
+    # oversubscription; leaving these uncabled makes that trade-off visible.
+    #
+    # Explicit port 20 on each OOB switch, rather than extending the allocator
+    # above: that splits 36 endpoints evenly across two switches, and adding
+    # two more would shift every index and collide with cables already placed.
+    ufms = sorted([n for n in devices if n.startswith("ufm-")], key=natural_key)
+    for i, node in enumerate(ufms):
+        link(
+            port(node, "eth0"),
+            port(f"oob-{i + 1:02d}", "eth20"),
+            oob,
+            f"{node}/eth0",
         )
 
     if missing:

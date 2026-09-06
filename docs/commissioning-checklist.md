@@ -50,15 +50,25 @@ the checklist and the model cannot drift apart.
 ## 3. Rack and stack
 
 - [ ] Racks placed, levelled, bonded to ground, seismic anchoring if required.
-- [ ] **Compute racks: DGX at U1, U9, U17, U25.** 8U each, 32U of 48U used.
-      The remaining 16U stays empty **by power, not by oversight** — four
-      systems already draw 40.8 kW. Note it on the rack so nobody helpfully
-      fills the gap.
+- [ ] **Compute racks: DGX at U3, U11, U22, U30** — 8U each, so U3–U10,
+      U11–U18, U22–U29, U30–U37. Lowest system starts at U3 because that is
+      the lowest position a server lift can reach.
+- [ ] **3U airflow gap at U19–U21 stays clear.** It is not spare capacity; it
+      is rack airflow management per NVIDIA's high-density rack profile.
+      Label it, or someone will fill it.
+- [ ] **Three horizontal rPDUs at U42, U44, U46** (2U each, spanning U42–U47),
+      A/B/C bottom to top and consistent across every rack. Note the electrical
+      guide permits a maximum of **two vertical (0U) rPDUs** per rack — three
+      sources means at least one must be horizontal, and the reference layout
+      mounts all three that way.
+- [ ] U38–U41 left clear above the top system for cable management.
 - [ ] Network racks: leaf at U1–U4, spine at U10–U11.
 - [ ] Management rack: SN4600C at U1 and U3 (2U each), SN2201 at U10 and U11.
 - [ ] Storage rack: fabric switches U1–U2, storage nodes U5, U7, U9, U11.
-- [ ] Three 0U rPDUs per rack, mounted in side channels, A/B/C left to right
-      and consistent across every rack.
+- [ ] **No 8U contiguous slot remains, and that is deliberate.** Four systems
+      draw 40.8 kW against circuits topping out near 32.8 kW — the density was
+      decided by power upstream of the elevation. Do not consolidate the gaps
+      to make room for a fifth.
 - [ ] Lift equipment used for DGX placement. 130 kg is a two-person-plus-lift
       item, not a two-person item.
 

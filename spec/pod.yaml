@@ -103,14 +103,22 @@ device_types:
   # declared value instead of computing from what is plugged in -- the feed then
   # reads 0 VA behind a healthy "Reachable" cable. The real 60 A rating lives in
   # the description, where it stays out of the arithmetic.
+  # SOURCED: "Horizontal rPDUs are typically placed near the top of the rack",
+  # and the electrical guide caps VERTICAL (0U) units at TWO per rack. Three
+  # rPDUs therefore cannot all be 0U -- NVIDIA's own single-SU rack layout
+  # mounts all three horizontally at the top. An earlier version of this spec
+  # modelled three 0U vertical units, which contradicted a source already cited
+  # here and made the rack's U accounting wrong.
+  # ASSUMED: 2U per unit. The mounting position and orientation are sourced;
+  # the exact height is not.
   - manufacturer: Vertiv
     manufacturer_slug: vertiv
     model: Geist 3P 415V 60A rPDU
     slug: geist-3p-415v-60a-rpdu
-    u_height: 0
+    u_height: 2
     full_depth: false
     airflow: passive
-    description: 0U vertical rPDU, 415 VAC 60 A three-phase
+    description: 2U horizontal rPDU, 415 VAC 60 A three-phase
     power_ports:
       # The nulls are EXPLICIT, not omissions. Declaring them means the
       # reconcile pass can see and correct a value that has drifted -- an
@@ -201,6 +209,36 @@ device_types:
         type: 1000base-t
       - name: uplink[1-4]
         type: 100gbase-x-qsfp28
+
+  # SOURCED: 2U (88 mm), two hot-swap power supplies, InfiniBand ports plus an
+  # Ethernet port for out-of-band management.
+  #
+  # This appliance belongs in the model for a specific reason: the architecture
+  # page states a UFM PAIR displaces one DGX H100 in a full SuperPOD, which is
+  # why the maximum is 127 systems rather than 128. It was cited in S1 and then
+  # left out of the model until a comparison against NVIDIA's management-rack
+  # figure caught the omission.
+  #
+  # ASSUMED: power draw. NVIDIA does not publish it on the pages consulted.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: UFM Enterprise Appliance
+    slug: ufm-enterprise-appliance
+    u_height: 2
+    full_depth: true
+    airflow: front-to-rear
+    description: Unified Fabric Manager appliance -- deployed as a pair
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 800
+        allocated_draw: 400
+    interfaces:
+      - name: ib[0-1]
+        type: infiniband-ndr-4x
+      - name: eth0
+        type: 1000base-t
+        mgmt_only: true
 
   # ENTIRELY ASSUMED. NVIDIA's reference architecture defers storage to
   # certified partners and publishes no reference storage node, so nothing
@@ -340,6 +378,7 @@ device_roles:
   - {name: Storage Fabric, slug: storage-fabric, color: "00bcd4"}
   - {name: Management Switch, slug: management-switch, color: "ff9800"}
   - {name: Storage Node, slug: storage-node, color: "795548"}
+  - {name: Fabric Management, slug: fabric-management, color: "e91e63"}
 
 # Devices are declared as GROUPS, not one entry each. 90 hand-written entries
 # would be 90 chances to typo a rack unit; here the positions are arithmetic.
@@ -355,30 +394,44 @@ device_roles:
 # no rack units, so NetBox holds them in the rack without an elevation slot.
 device_groups:
 
-  # 32 DGX H100: four per compute rack at an 8U stride -> U1, U9, U17, U25.
+  # SOURCED layout, from the white-space infrastructure guidance:
+  #   - "servers should be mounted nearest the bottom of the rack, starting
+  #      with the lowest position accessible by the server lift (usually rack
+  #      unit position 3)"
+  #   - "two servers grouped at the bottom of the rack, a 3 RU gap in the
+  #      middle to aid in rack airflow management, and then two servers
+  #      grouped above that"
   #
-  # NOTE the rack is POWER-limited, not space-limited. Four systems occupy 32U
-  # of 48U, leaving 16U free -- but four already draw 40.8 kW, above every
-  # circuit option in NVIDIA's table. Adding a fifth is a power problem long
-  # before it is a space problem. This is the single most important thing the
-  # elevation does not show you.
+  # So: U3-U10, U11-U18, [3U airflow gap at U19-U21], U22-U29, U30-U37.
+  # Positions are listed explicitly because the stride is NOT uniform -- the
+  # airflow gap breaks it, and a uniform step cannot express that.
+  #
+  # NOTE what the free space is NOT. U1-U2 is below server-lift reach, U19-U21
+  # is airflow, and the top is the rPDU zone. Every empty U is allocated; there
+  # is no 8U contiguous slot for a fifth system. The rack layout already
+  # encodes the power limit -- four systems draw 40.8 kW against circuits
+  # topping out near 32.8 kW, so the density was decided upstream of the
+  # elevation and the drawing simply reflects it.
   - description: 32x DGX H100, four per compute rack
     device_type: dgx-h100
     role: gpu-compute-node
     racks: [C01, C02, C03, C04, C05, C06, C07, C08]
     per_rack: 4
     name_template: "dgx-{rack_lower}-{n:02d}"
-    start_position: 1
-    position_step: 8
+    positions: [3, 11, 22, 30]
     face: front
 
-  # Three rPDUs in every rack, including network/management/storage.
-  - description: three 0U rPDUs per rack for N+1
+  # Three rPDUs in every rack, horizontal, near the top per NVIDIA's layout.
+  # 2U each at U42/U44/U46, spanning U42-U47 and leaving U38-U41 clear above
+  # the top DGX for cable management.
+  - description: three horizontal rPDUs per rack for N+1
     device_type: geist-3p-415v-60a-rpdu
     role: power-distribution
     racks: [C01, C02, C03, C04, C05, C06, C07, C08, N01, N02, M01, S01]
     per_rack: 3
     name_template: "pdu-{rack_lower}-{letter}"
+    positions: [42, 44, 46]
+    face: front
 
   # SOURCED: 8 compute leaf switches per SU -- one per rail. Split across the
   # two network racks. End-of-row, not top-of-rack: rail N from all 32 nodes
@@ -436,6 +489,25 @@ device_groups:
     name_template: "oob-{g:02d}"
     start_position: 10
     position_step: 1
+    face: front
+
+  # A pair, per the reference architecture. M01 has SN4600C at U1-U4 and
+  # SN2201 at U10-U11, so U6 and U8 are free.
+  #
+  # NOTE their InfiniBand ports are deliberately left uncabled -- see
+  # docs/design-notes.md. A strictly 1:1 non-blocking leaf-spine consumes every
+  # port on every switch (32 down + 32 up per leaf; 8 leaf x 8 links fills all
+  # 64 spine ports), leaving nowhere to attach a management appliance. Real
+  # deployments reserve fabric ports for this, at the cost of slight
+  # oversubscription. Modelling the appliance without inventing free ports
+  # makes that trade-off visible instead of hiding it.
+  - description: UFM appliance pair -- compute and storage fabric management
+    device_type: ufm-enterprise-appliance
+    role: fabric-management
+    racks: [M01]
+    per_rack: 2
+    name_template: "ufm-{g:02d}"
+    positions: [6, 8]
     face: front
 
   # ENTIRELY ASSUMED -- placeholder so S01 is not empty and the storage fabric
