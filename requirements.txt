@@ -1,0 +1,9 @@
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.19
+packaging==26.3
+pynetbox==7.8.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+requests==2.34.2
+urllib3==2.7.0
