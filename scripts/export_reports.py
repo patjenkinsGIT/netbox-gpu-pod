@@ -226,6 +226,67 @@ def cable_schedule(nb, path):
     return rows
 
 
+def rail_map(nb, path):
+    """Prove the rail-optimised property in eight rows.
+
+    For each rail, which leaf its cables land on and how many distinct nodes
+    reach it. A correct fabric shows exactly one leaf per rail and 32 nodes
+    on each. Anything else -- two leaves for one rail, or a node count below
+    32 -- is a miscabling that still links and still passes a port count.
+    """
+    device_of = {}
+    for iface in nb.dcim.interfaces.all():
+        device_of[iface.id] = (iface.device.name, iface.name)
+
+    rails = {}
+    for cable in nb.dcim.cables.all():
+        ends = []
+        for side in (cable.a_terminations, cable.b_terminations):
+            if not side:
+                continue
+            term = side[0]
+            # MUST filter on object_type. Interfaces, power ports, power
+            # outlets and power feeds are separate tables with independent id
+            # sequences, so power outlet #100 will happily match interface
+            # #100 in this lookup and report a DGX node as a leaf switch.
+            if getattr(term, "object_type", None) != "dcim.interface":
+                continue
+            obj = getattr(term, "object", None)
+            if obj is not None and obj.id in device_of:
+                ends.append(device_of[obj.id])
+        if len(ends) != 2:
+            continue
+
+        for (dev_a, port_a), (dev_b, port_b) in (ends, ends[::-1]):
+            if dev_a.startswith("dgx-") and port_a.startswith("ib-rail"):
+                rail = port_a.replace("ib-rail", "")
+                entry = rails.setdefault(rail, {"leaves": set(), "nodes": set()})
+                entry["leaves"].add(dev_b)
+                entry["nodes"].add(dev_a)
+
+    rows = []
+    for rail in sorted(rails, key=int):
+        entry = rails[rail]
+        rows.append({
+            "rail": rail,
+            "leaf": ", ".join(sorted(entry["leaves"])),
+            "leaf_count": len(entry["leaves"]),
+            "nodes": len(entry["nodes"]),
+            # PASS/FAIL, matching the power report. An earlier version used
+            # "CHECK", which reads as easily as "checked, fine" as it does as
+            # "look at this" -- a status that needs interpreting is not a status.
+            "verdict": "PASS" if len(entry["leaves"]) == 1 and len(entry["nodes"]) == 32
+                       else "FAIL",
+        })
+
+    with open(path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return rows
+
+
 def main():
     try:
         nb, info = connect()
@@ -257,6 +318,12 @@ def main():
     limit = [c for c in cables if c["reach_check"].startswith("OVER")]
     print(f"  over 30m optimum: {len(over)}")
     print(f"  over 50m limit:   {len(limit)}")
+
+    rail_path = os.path.join(EXPORT_DIR, "rail-map.csv")
+    rails = rail_map(nb, rail_path)
+    print(f"\nwrote {rail_path}")
+    for r in rails:
+        print(f"  rail {r['rail']} -> {r['leaf']}  ({r['nodes']} nodes)  {r['verdict']}")
 
     return 0
 
