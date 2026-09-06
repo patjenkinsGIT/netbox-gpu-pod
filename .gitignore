@@ -1,5 +1,7 @@
 netbox-docker/
-.env
+/.env
+!env-example/.env
+exports/*.sql
 *.token
 __pycache__/
 .venv/
