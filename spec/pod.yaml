@@ -1,0 +1,82 @@
+# Reference GPU Pod -- declarative spec
+#
+# This file describes the DESIRED END STATE of the pod. build_pod.py compares
+# it against what NetBox currently holds and closes the gap. It is not a list
+# of actions, and nothing here assumes a particular starting point.
+#
+# Numbers marked SOURCED come from NVIDIA's published reference architecture.
+# Numbers marked ASSUMED are reasonable inferences that are NOT in those docs;
+# they must stay labelled as such in the README.
+
+meta:
+  description: One NVIDIA DGX SuperPOD scalable unit (32x DGX H100, 12 racks)
+  sources:
+    architecture: https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-h100/latest/dgx-superpod-architecture.html
+    components: https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-h100/latest/dgx-superpod-components.html
+    electrical: https://docs.nvidia.com/dgx-superpod/design-guides/dgx-superpod-data-center-design-h100/latest/electrical.html
+
+region:
+  name: US-East
+  slug: us-east
+
+site:
+  name: Reference Pod 1
+  slug: reference-pod-1
+  status: active
+  description: Single DGX SuperPOD scalable unit -- reference model
+
+location:
+  name: Data Hall A
+  slug: data-hall-a
+  status: active
+
+# SOURCED: SuperPOD racks must be EIA-310, at least 48U, minimum 600x1200mm.
+# NVIDIA recommends 800x1200mm for cable management, rPDU placement, airflow
+# and rear service clearance -- taken here, since 8 NDR400 rails per node plus
+# storage, in-band, OOB and three power feeds make 600mm impractical.
+rack_type:
+  manufacturer: Vertiv
+  manufacturer_slug: vertiv
+  model: 48U 800x1200 Cabinet
+  slug: 48u-800x1200-cabinet
+  form_factor: 4-post-cabinet
+  width: 19
+  u_height: 48
+  starting_unit: 1
+  outer_width: 800
+  outer_depth: 1200
+  outer_unit: mm
+  max_weight: 1360
+  weight_unit: kg
+
+rack_roles:
+  - name: Compute
+    slug: compute
+    color: "2196f3"
+  - name: Network
+    slug: network
+    color: "4caf50"
+  - name: Management
+    slug: management
+    color: "ff9800"
+  - name: Storage
+    slug: storage
+    color: "9c27b0"
+
+# 12 racks. SOURCED: an SU is up to 32 DGX H100 at 4 systems per rack, so eight
+# compute racks. Leaf switches sit in the network racks rather than top-of-rack
+# because rail-optimised topology requires rail N from every node to land on the
+# same leaf -- see docs/design-notes.md.
+racks:
+  - {name: C01, role: compute}
+  - {name: C02, role: compute}
+  - {name: C03, role: compute}
+  - {name: C04, role: compute}
+  - {name: C05, role: compute}
+  - {name: C06, role: compute}
+  - {name: C07, role: compute}
+  - {name: C08, role: compute}
+  - {name: N01, role: network}
+  - {name: N02, role: network}
+  - {name: M01, role: management}
+  - {name: S01, role: storage}
