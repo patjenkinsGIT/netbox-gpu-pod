@@ -106,6 +106,136 @@ class Runner:
             print(f"skipped: {self.skipped}")
 
 
+def expand(pattern):
+    """Expand a NetBox-style name range into concrete names.
+
+    "port[1-64]" -> ["port1", ..., "port64"];  "bmc" -> ["bmc"]
+
+    The NetBox UI expands these ranges when you bulk-add components, but the
+    REST API does not -- it takes literal names. Keeping the same syntax in
+    the spec means what you write here matches what you would type in the
+    form, and this function bridges the difference.
+    """
+    if "[" not in pattern:
+        return [pattern]
+
+    head, rest = pattern.split("[", 1)
+    body, tail = rest.split("]", 1)
+    start, end = (int(x) for x in body.split("-"))
+    return [f"{head}{i}{tail}" for i in range(start, end + 1)]
+
+
+def ensure_components(run, endpoint, device_type, wanted, kind):
+    """Create any of `wanted` that this device type does not already have.
+
+    Fetches existing templates once and filters client-side on device_type.id
+    rather than passing a filter argument, because the filter parameter name
+    for template endpoints has changed between NetBox versions and this is
+    both version-proof and one request instead of many.
+    """
+    # Check for the sentinel BEFORE touching any attribute a real object has.
+    # Planned carries only .label and .id, by design -- it is a marker, not a
+    # stand-in that pretends to be a device type.
+    if isinstance(device_type, Planned):
+        run.planned += len(wanted)
+        print(f"  +  {device_type.label}: {len(wanted)} {kind}  (would create)")
+        return
+
+    label = f"{device_type.model}: {len(wanted)} {kind}"
+
+    existing = {
+        t.name for t in endpoint.all()
+        if t.device_type and t.device_type.id == device_type.id
+    }
+    missing = [w for w in wanted if w["name"] not in existing]
+
+    if not missing:
+        run.existing += len(wanted)
+        print(f"  =  {label}")
+        return
+
+    if run.dry_run:
+        run.planned += len(missing)
+        print(f"  +  {device_type.model}: {len(missing)} {kind}  (would create)")
+        return
+
+    # One bulk POST rather than a request per component -- 64 interfaces on a
+    # QM9700 is otherwise 64 round trips.
+    endpoint.create([{**m, "device_type": device_type.id} for m in missing])
+    run.created += len(missing)
+    run.existing += len(wanted) - len(missing)
+    print(f"  +  {device_type.model}: {len(missing)} {kind} created")
+
+
+def build_device_types(run, spec):
+    """Device types plus their interface and power-port templates."""
+
+    print("\ndevice types")
+    for dt_spec in spec.get("device_types", []):
+        manufacturer = run.ensure(
+            run.nb.dcim.manufacturers,
+            {"slug": dt_spec["manufacturer_slug"]},
+            {
+                "name": dt_spec["manufacturer"],
+                "slug": dt_spec["manufacturer_slug"],
+            },
+            dt_spec["manufacturer"],
+        )
+
+        payload = {
+            "manufacturer": manufacturer.id,
+            "model": dt_spec["model"],
+            "slug": dt_spec["slug"],
+            "u_height": dt_spec["u_height"],
+            "is_full_depth": dt_spec.get("full_depth", True),
+            "airflow": dt_spec["airflow"],
+            "description": dt_spec.get("description", ""),
+        }
+        if "weight" in dt_spec:
+            payload["weight"] = dt_spec["weight"]
+            payload["weight_unit"] = dt_spec["weight_unit"]
+
+        device_type = run.ensure(
+            run.nb.dcim.device_types,
+            {"slug": dt_spec["slug"]},
+            payload,
+            dt_spec["model"],
+            depends_on=(manufacturer,),
+        )
+
+        if device_type is None:
+            continue
+
+        power_ports = []
+        for pp in dt_spec.get("power_ports", []):
+            for name in expand(pp["name"]):
+                power_ports.append({
+                    "name": name,
+                    "type": pp["type"],
+                    "maximum_draw": pp["maximum_draw"],
+                    "allocated_draw": pp["allocated_draw"],
+                })
+        if power_ports:
+            ensure_components(
+                run, run.nb.dcim.power_port_templates,
+                device_type, power_ports, "power ports",
+            )
+
+        interfaces = []
+        for iface in dt_spec.get("interfaces", []):
+            for name in expand(iface["name"]):
+                interfaces.append({
+                    "name": name,
+                    "type": iface["type"],
+                    "mgmt_only": iface.get("mgmt_only", False),
+                })
+        if interfaces:
+            ensure_components(
+                run, run.nb.dcim.interface_templates,
+                device_type, interfaces, "interfaces",
+            )
+
+
 def build_racks(run, spec):
     """Region -> Site -> Location -> RackType + Roles -> 12 racks."""
 
@@ -245,6 +375,7 @@ def main():
     run = Runner(nb, args.dry_run)
     try:
         build_racks(run, spec)
+        build_device_types(run, spec)
     except requests.exceptions.ConnectionError:
         print(f"\nFAIL: lost connection to {info['url']}", file=sys.stderr)
         return 1

@@ -49,6 +49,119 @@ rack_type:
   max_weight: 1360
   weight_unit: kg
 
+# Device types. Component names use the same [start-end] range syntax the
+# NetBox UI offers, but note the REST API does NOT expand it -- build_pod.py
+# expands these itself before creating templates one by one.
+#
+# Power modelling follows the same rule used for the DGX H100:
+#   allocated_draw = total draw / number of PSUs     (normal operation)
+#   maximum_draw   = total draw / PSUs required      (worst case, others lost)
+# For 2-PSU switches where either supply can carry the box, that means
+# allocated = total/2 and maximum = total.
+device_types:
+
+  # SOURCED: 1U, 32 OSFP cages presenting 64 NDR400 ports, 14.8 kg with 2 PSUs,
+  # 200-240 VAC 10A. Power is published two ways: 747 W typical with PASSIVE
+  # cables, 1720 W maximum with ACTIVE cables.
+  #
+  # DESIGN DECISION: we budget against 1720 W, not 747 W. Rail-optimised
+  # topology puts leaf switches end-of-row (rail N from all 32 nodes must reach
+  # the same leaf), and those runs exceed passive copper reach -- so this pod
+  # runs optical, and the passive-cable typical figure does not apply to it.
+  # The ToR-vs-EoR decision propagates straight into the power budget.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: QM9700
+    slug: qm9700
+    u_height: 1
+    full_depth: true
+    weight: 14.8
+    weight_unit: kg
+    airflow: front-to-rear
+    description: Quantum-2 NDR 400G InfiniBand switch, 64 ports
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 1720
+        allocated_draw: 860
+    interfaces:
+      # 64 logical NDR400 ports via 32 twin-port OSFP cages. Modelled as 64
+      # discrete interfaces because cabling and rail mapping are per-port.
+      - name: port[1-64]
+        type: infiniband-ndr-4x
+
+  # SOURCED: 88 mm high = 2U (NOT 1U), 64x QSFP28 100GbE, 466 W typical,
+  # 14.64 kg. NVIDIA publishes no maximum, so maximum_draw is derived from
+  # typical under the same 2-PSU rule rather than invented.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: SN4600C
+    slug: sn4600c
+    u_height: 2
+    full_depth: true
+    weight: 14.64
+    weight_unit: kg
+    airflow: front-to-rear
+    description: Spectrum-3 100GbE switch, 64 ports -- in-band management fabric
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 466
+        allocated_draw: 233
+    interfaces:
+      - name: eth[1-64]
+        type: 100gbase-x-qsfp28
+
+  # SOURCED: 43.9 mm = 1U, 48x RJ45 1GbE plus 4x QSFP28 100GbE uplinks,
+  # 98 W typical, 7.41 kg.
+  # ASSUMED: 2 PSUs -- redundancy is not stated in the specification page.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: SN2201
+    slug: sn2201
+    u_height: 1
+    full_depth: false
+    weight: 7.41
+    weight_unit: kg
+    airflow: front-to-rear
+    description: Spectrum 1GbE management switch -- out-of-band / BMC fabric
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 98
+        allocated_draw: 49
+    interfaces:
+      - name: eth[1-48]
+        type: 1000base-t
+      - name: uplink[1-4]
+        type: 100gbase-x-qsfp28
+
+  # ENTIRELY ASSUMED. NVIDIA's reference architecture defers storage to
+  # certified partners and publishes no reference storage node, so nothing
+  # below is sourced. It exists so S01 is not an empty rack and so the storage
+  # fabric has endpoints. Must be labelled as a placeholder in the README.
+  - manufacturer: Generic
+    manufacturer_slug: generic
+    model: Storage Node (reference)
+    slug: storage-node-reference
+    u_height: 2
+    full_depth: true
+    airflow: front-to-rear
+    description: PLACEHOLDER -- not from NVIDIA reference architecture
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 1600
+        allocated_draw: 800
+    interfaces:
+      - name: ib-storage[0-1]
+        type: infiniband-ndr-4x
+      - name: eth[0-1]
+        type: 100gbase-x-qsfp28
+      - name: bmc
+        type: 1000base-t
+        mgmt_only: true
+
 rack_roles:
   - name: Compute
     slug: compute
