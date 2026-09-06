@@ -167,6 +167,124 @@ def ensure_components(run, endpoint, device_type, wanted, kind):
     print(f"  +  {device_type.model}: {len(missing)} {kind} created")
 
 
+def ensure_outlets(run, device_type, wanted):
+    """Create power outlet templates, resolving each one's parent power port.
+
+    Outlets reference their power port by id. Without that link NetBox has no
+    path from a plugged-in device up to the feed, and utilisation silently
+    reads zero -- the exact failure that cost an hour in S3.
+    """
+    kind = "power outlets"
+
+    if isinstance(device_type, Planned):
+        run.planned += len(wanted)
+        print(f"  +  {device_type.label}: {len(wanted)} {kind}  (would create)")
+        return
+
+    ports = {
+        p.name: p.id for p in run.nb.dcim.power_port_templates.all()
+        if p.device_type and p.device_type.id == device_type.id
+    }
+    existing = {
+        o.name for o in run.nb.dcim.power_outlet_templates.all()
+        if o.device_type and o.device_type.id == device_type.id
+    }
+    missing = [w for w in wanted if w["name"] not in existing]
+
+    if not missing:
+        run.existing += len(wanted)
+        print(f"  =  {device_type.model}: {len(wanted)} {kind}")
+        return
+
+    if run.dry_run:
+        run.planned += len(missing)
+        print(f"  +  {device_type.model}: {len(missing)} {kind}  (would create)")
+        return
+
+    payloads = []
+    for m in missing:
+        parent = ports.get(m["_parent_port"])
+        if parent is None:
+            raise RuntimeError(
+                f"{device_type.model}: outlet {m['name']} names power port "
+                f"'{m['_parent_port']}', which does not exist on this type"
+            )
+        payloads.append({
+            "name": m["name"],
+            "type": m["type"],
+            "device_type": device_type.id,
+            "power_port": parent,
+        })
+
+    run.nb.dcim.power_outlet_templates.create(payloads)
+    run.created += len(missing)
+    run.existing += len(wanted) - len(missing)
+    print(f"  +  {device_type.model}: {len(missing)} {kind} created")
+
+
+def build_devices(run, spec):
+    """Device roles, then devices declared as groups with computed positions."""
+
+    print("\ndevice roles")
+    roles = {}
+    for role_spec in spec.get("device_roles", []):
+        roles[role_spec["slug"]] = run.ensure(
+            run.nb.dcim.device_roles,
+            {"slug": role_spec["slug"]},
+            {
+                "name": role_spec["name"],
+                "slug": role_spec["slug"],
+                "color": role_spec["color"],
+            },
+            role_spec["name"],
+        )
+
+    site = run.nb.dcim.sites.get(slug=spec["site"]["slug"])
+
+    for group in spec.get("device_groups", []):
+        print(f"\n{group['description']}")
+
+        device_type = run.nb.dcim.device_types.get(slug=group["device_type"])
+        role = roles.get(group["role"])
+
+        index = 0
+        for rack_name in group["racks"]:
+            rack = run.nb.dcim.racks.get(name=rack_name, site_id=site.id)
+
+            for n in range(1, group["per_rack"] + 1):
+                index += 1
+                name = group["name_template"].format(
+                    rack=rack_name,
+                    rack_lower=rack_name.lower(),
+                    n=n,
+                    g=index,
+                    letter=chr(ord("a") + n - 1),
+                )
+
+                payload = {
+                    "name": name,
+                    "device_type": device_type.id if device_type else None,
+                    "role": role.id if role else None,
+                    "site": site.id,
+                    "rack": rack.id if rack else None,
+                    "status": "active",
+                }
+
+                # 0U devices have no elevation slot; position and face stay unset.
+                if "start_position" in group:
+                    step = group.get("position_step", 1)
+                    payload["position"] = group["start_position"] + (n - 1) * step
+                    payload["face"] = group.get("face", "front")
+
+                run.ensure(
+                    run.nb.dcim.devices,
+                    {"name": name},
+                    payload,
+                    name,
+                    depends_on=(device_type, role, rack),
+                )
+
+
 def build_device_types(run, spec):
     """Device types plus their interface and power-port templates."""
 
@@ -209,17 +327,32 @@ def build_device_types(run, spec):
         power_ports = []
         for pp in dt_spec.get("power_ports", []):
             for name in expand(pp["name"]):
-                power_ports.append({
-                    "name": name,
-                    "type": pp["type"],
-                    "maximum_draw": pp["maximum_draw"],
-                    "allocated_draw": pp["allocated_draw"],
-                })
+                entry = {"name": name}
+                # type and the draw fields are all optional. Omitting the draw
+                # fields is load-bearing for pass-through ports: NetBox only
+                # aggregates downstream load when BOTH are empty.
+                for field in ("type", "maximum_draw", "allocated_draw", "description"):
+                    if field in pp:
+                        entry[field] = pp[field]
+                power_ports.append(entry)
         if power_ports:
             ensure_components(
                 run, run.nb.dcim.power_port_templates,
                 device_type, power_ports, "power ports",
             )
+
+        # Outlets carry a foreign key to their parent power port template, so
+        # they must be created after it and need its id -- not just its name.
+        outlets = []
+        for po in dt_spec.get("power_outlets", []):
+            for name in expand(po["name"]):
+                outlets.append({
+                    "name": name,
+                    "type": po["type"],
+                    "_parent_port": po["power_port"],
+                })
+        if outlets:
+            ensure_outlets(run, device_type, outlets)
 
         interfaces = []
         for iface in dt_spec.get("interfaces", []):
@@ -376,6 +509,7 @@ def main():
     try:
         build_racks(run, spec)
         build_device_types(run, spec)
+        build_devices(run, spec)
     except requests.exceptions.ConnectionError:
         print(f"\nFAIL: lost connection to {info['url']}", file=sys.stderr)
         return 1

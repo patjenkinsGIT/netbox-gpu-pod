@@ -60,6 +60,65 @@ rack_type:
 # allocated = total/2 and maximum = total.
 device_types:
 
+  # SOURCED: 8U, 10.2 kW, 130.45 kg, 6 PSUs in 4+2 (four must be energised),
+  # 8x NDR400 compute connections per system.
+  # ASSUMED: 2 storage + 2 in-band NICs; the compute rails are sourced, these
+  # counts are not. Naming deviates from real DGX names (ibp24s0 style) so the
+  # rail-optimised mapping is self-documenting.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: DGX H100
+    slug: dgx-h100
+    u_height: 8
+    full_depth: true
+    weight: 130.45
+    weight_unit: kg
+    airflow: front-to-rear
+    description: 8x H100, 640 GB GPU memory, 6 PSU 4+2
+    power_ports:
+      # 10.2 kW / 6 supplies = 1700 W allocated in normal operation.
+      # 10.2 kW / 4 required = 2550 W maximum when two supplies are lost.
+      # C20 because 2550 W exceeds C14/C13's 10 A (~2300 W at 230 V).
+      - name: psu[1-6]
+        type: iec-60320-c20
+        maximum_draw: 2550
+        allocated_draw: 1700
+    interfaces:
+      - name: ib-rail[0-7]
+        type: infiniband-ndr-4x
+      - name: ib-storage[0-1]
+        type: infiniband-ndr-4x
+      - name: inband[0-1]
+        type: 100gbase-x-qsfp28
+      - name: bmc
+        type: 1000base-t
+        mgmt_only: true
+
+  # 0U vertical rPDU. SOURCED: NVIDIA specifies three rPDUs per rack for N+1
+  # and names Vertiv/Geist among recommended vendors.
+  #
+  # CRITICAL: the `input` port carries NO draw values, deliberately. NetBox
+  # aggregates downstream load through a pass-through power port ONLY when both
+  # maximum_draw and allocated_draw are empty. Setting either makes it use the
+  # declared value instead of computing from what is plugged in -- the feed then
+  # reads 0 VA behind a healthy "Reachable" cable. The real 60 A rating lives in
+  # the description, where it stays out of the arithmetic.
+  - manufacturer: Vertiv
+    manufacturer_slug: vertiv
+    model: Geist 3P 415V 60A rPDU
+    slug: geist-3p-415v-60a-rpdu
+    u_height: 0
+    full_depth: false
+    airflow: passive
+    description: 0U vertical rPDU, 415 VAC 60 A three-phase
+    power_ports:
+      - name: input
+        description: 415 VAC 60 A three-phase, hardwired to panel
+    power_outlets:
+      - name: outlet[1-24]
+        type: iec-60320-c19
+        power_port: input
+
   # SOURCED: 1U, 32 OSFP cages presenting 64 NDR400 ports, 14.8 kg with 2 PSUs,
   # 200-240 VAC 10A. Power is published two ways: 747 W typical with PASSIVE
   # cables, 1720 W maximum with ACTIVE cables.
@@ -193,3 +252,121 @@ racks:
   - {name: N02, role: network}
   - {name: M01, role: management}
   - {name: S01, role: storage}
+
+device_roles:
+  - {name: GPU Compute Node, slug: gpu-compute-node, color: "9c27b0"}
+  - {name: Power Distribution, slug: power-distribution, color: "607d8b"}
+  - {name: Compute Fabric Leaf, slug: compute-fabric-leaf, color: "2196f3"}
+  - {name: Compute Fabric Spine, slug: compute-fabric-spine, color: "3f51b5"}
+  - {name: Storage Fabric, slug: storage-fabric, color: "00bcd4"}
+  - {name: Management Switch, slug: management-switch, color: "ff9800"}
+  - {name: Storage Node, slug: storage-node, color: "795548"}
+
+# Devices are declared as GROUPS, not one entry each. 90 hand-written entries
+# would be 90 chances to typo a rack unit; here the positions are arithmetic.
+#
+# name_template placeholders:
+#   {rack}        rack name as written, e.g. C01
+#   {rack_lower}  lowercased, e.g. c01
+#   {n}           index within the rack, 1-based
+#   {g}           index across the whole group, 1-based
+#   {letter}      a, b, c ... from {n}
+#
+# Omit start_position for 0U devices -- they mount in the side channel and take
+# no rack units, so NetBox holds them in the rack without an elevation slot.
+device_groups:
+
+  # 32 DGX H100: four per compute rack at an 8U stride -> U1, U9, U17, U25.
+  #
+  # NOTE the rack is POWER-limited, not space-limited. Four systems occupy 32U
+  # of 48U, leaving 16U free -- but four already draw 40.8 kW, above every
+  # circuit option in NVIDIA's table. Adding a fifth is a power problem long
+  # before it is a space problem. This is the single most important thing the
+  # elevation does not show you.
+  - description: 32x DGX H100, four per compute rack
+    device_type: dgx-h100
+    role: gpu-compute-node
+    racks: [C01, C02, C03, C04, C05, C06, C07, C08]
+    per_rack: 4
+    name_template: "dgx-{rack_lower}-{n:02d}"
+    start_position: 1
+    position_step: 8
+    face: front
+
+  # Three rPDUs in every rack, including network/management/storage.
+  - description: three 0U rPDUs per rack for N+1
+    device_type: geist-3p-415v-60a-rpdu
+    role: power-distribution
+    racks: [C01, C02, C03, C04, C05, C06, C07, C08, N01, N02, M01, S01]
+    per_rack: 3
+    name_template: "pdu-{rack_lower}-{letter}"
+
+  # SOURCED: 8 compute leaf switches per SU -- one per rail. Split across the
+  # two network racks. End-of-row, not top-of-rack: rail N from all 32 nodes
+  # must reach the SAME leaf, which makes ToR structurally impossible.
+  - description: 8x QM9700 compute fabric leaf, one per rail
+    device_type: qm9700
+    role: compute-fabric-leaf
+    racks: [N01, N02]
+    per_rack: 4
+    name_template: "leaf-{g:02d}"
+    start_position: 1
+    position_step: 1
+    face: front
+
+  # SOURCED: 4 spine switches per SU.
+  - description: 4x QM9700 compute fabric spine
+    device_type: qm9700
+    role: compute-fabric-spine
+    racks: [N01, N02]
+    per_rack: 2
+    name_template: "spine-{g:02d}"
+    start_position: 10
+    position_step: 1
+    face: front
+
+  # ASSUMED count -- NVIDIA names QM9700 for the storage fabric but the RA
+  # defers sizing to the storage partner.
+  - description: 2x QM9700 storage fabric
+    device_type: qm9700
+    role: storage-fabric
+    racks: [S01]
+    per_rack: 2
+    name_template: "stor-fabric-{g:02d}"
+    start_position: 1
+    position_step: 1
+    face: front
+
+  # SOURCED device, ASSUMED count. SN4600C is 2U, hence the step of 2.
+  - description: 2x SN4600C in-band management fabric
+    device_type: sn4600c
+    role: management-switch
+    racks: [M01]
+    per_rack: 2
+    name_template: "inband-{g:02d}"
+    start_position: 1
+    position_step: 2
+    face: front
+
+  # 48 x 1GbE per switch; 32 DGX BMCs plus switch and storage BMCs exceed one.
+  - description: 2x SN2201 out-of-band / BMC fabric
+    device_type: sn2201
+    role: management-switch
+    racks: [M01]
+    per_rack: 2
+    name_template: "oob-{g:02d}"
+    start_position: 10
+    position_step: 1
+    face: front
+
+  # ENTIRELY ASSUMED -- placeholder so S01 is not empty and the storage fabric
+  # has endpoints. Not from NVIDIA's reference architecture.
+  - description: 4x placeholder storage nodes
+    device_type: storage-node-reference
+    role: storage-node
+    racks: [S01]
+    per_rack: 4
+    name_template: "storage-{g:02d}"
+    start_position: 5
+    position_step: 2
+    face: front
