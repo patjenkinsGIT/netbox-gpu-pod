@@ -297,6 +297,41 @@ power_feeds:
 power_cabling:
   outlets_per_pdu: 24
 
+# Fabric cabling.
+#
+# RAIL-OPTIMISED is the whole point: rail N on EVERY node lands on leaf N.
+# Node 1's rail 3 and node 32's rail 3 both terminate on leaf-04, so a
+# collective across rail 3 crosses one switch instead of traversing the spine.
+# This is also why leaves are end-of-row rather than top-of-rack -- a ToR leaf
+# could only ever see the four nodes in its own rack.
+#
+# Lengths are NOMINAL, pending a floor plan. They are declared so the S6 cable
+# schedule has a length column and so the 30 m InfiniBand guidance can be
+# checked. SOURCED: multimode optical must not exceed 50 m total travel, and
+# NVIDIA recommends staying under 30 m for optimum performance.
+fabric_cabling:
+  compute_rails:
+    # 8 rails x 32 nodes = 256 cables. Leaf ports 1-32 are downlinks.
+    cable_type: mmf-om4
+    length_m: 25
+  uplinks:
+    # Each leaf has 64 ports: 32 down to nodes, 32 up to spines. Four spines
+    # means 8 links per leaf-spine pair, which is a 1:1 non-blocking fabric
+    # and exactly consumes all 64 ports on every spine (8 leaf x 8 links).
+    per_leaf_spine_pair: 8
+    leaf_uplink_start_port: 33
+    cable_type: aoc
+    length_m: 5
+  storage:
+    cable_type: mmf-om4
+    length_m: 20
+  in_band:
+    cable_type: mmf-om4
+    length_m: 20
+  out_of_band:
+    cable_type: cat6a
+    length_m: 30
+
 device_roles:
   - {name: GPU Compute Node, slug: gpu-compute-node, color: "9c27b0"}
   - {name: Power Distribution, slug: power-distribution, color: "607d8b"}

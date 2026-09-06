@@ -573,6 +573,157 @@ def build_power_cabling(run, spec, site):
         print(f"  +  {len(batch)} power cables created")
 
 
+def build_fabric_cabling(run, spec):
+    """Rail-optimised compute fabric, leaf-spine uplinks, storage, in-band, OOB.
+
+    Every mapping here is explicit arithmetic rather than "next free port",
+    because in a rail-optimised fabric WHICH port a cable lands on is the
+    design. Rail 3 on node 1 and rail 3 on node 32 must reach the same leaf;
+    a nearest-free-port allocator would produce a working-looking fabric with
+    none of the locality the topology exists to provide.
+    """
+    cfg = spec.get("fabric_cabling")
+    if not cfg:
+        return
+
+    print("\nfabric cabling")
+
+    devices = {d.name: d for d in run.nb.dcim.devices.all()}
+    by_device = {}
+    for iface in run.nb.dcim.interfaces.all():
+        by_device.setdefault(iface.device.id, {})[iface.name] = iface
+
+    def port(device_name, iface_name):
+        device = devices.get(device_name)
+        if device is None:
+            return None
+        return by_device.get(device.id, {}).get(iface_name)
+
+    pending = []
+    missing = []
+
+    def link(a, b, settings, label):
+        if a is None or b is None:
+            missing.append(label)
+            return
+        if a.cable or b.cable:
+            return
+        pending.append({
+            "a_terminations": [{"object_type": "dcim.interface", "object_id": a.id}],
+            "b_terminations": [{"object_type": "dcim.interface", "object_id": b.id}],
+            "status": "connected",
+            "type": settings["cable_type"],
+            "length": settings["length_m"],
+            "length_unit": "m",
+        })
+
+    nodes = sorted(
+        [n for n in devices if n.startswith("dgx-")], key=natural_key
+    )
+    storage_nodes = sorted(
+        [n for n in devices if n.startswith("storage-")], key=natural_key
+    )
+
+    # 1. Compute rails: node i, rail r -> leaf-(r+1), port (i+1).
+    rails = cfg["compute_rails"]
+    for i, node in enumerate(nodes):
+        for r in range(8):
+            link(
+                port(node, f"ib-rail{r}"),
+                port(f"leaf-{r + 1:02d}", f"port{i + 1}"),
+                rails,
+                f"{node}/ib-rail{r}",
+            )
+
+    # 2. Leaf-spine uplinks, 8 per pair. Leaf uplink ports start at 33;
+    #    spine ports fill 1-64 exactly across 8 leaves x 8 links.
+    up = cfg["uplinks"]
+    per_pair = up["per_leaf_spine_pair"]
+    for leaf_index in range(1, 9):
+        for spine_index in range(1, 5):
+            for k in range(per_pair):
+                leaf_port = up["leaf_uplink_start_port"] + (spine_index - 1) * per_pair + k
+                spine_port = (leaf_index - 1) * per_pair + k + 1
+                link(
+                    port(f"leaf-{leaf_index:02d}", f"port{leaf_port}"),
+                    port(f"spine-{spine_index:02d}", f"port{spine_port}"),
+                    up,
+                    f"leaf-{leaf_index:02d}/port{leaf_port}",
+                )
+
+    # 3. Storage fabric: two per node, one to each storage-fabric switch.
+    #    Compute nodes take ports 1-32; storage nodes follow at 33+.
+    stor = cfg["storage"]
+    for i, node in enumerate(nodes):
+        for j in range(2):
+            link(
+                port(node, f"ib-storage{j}"),
+                port(f"stor-fabric-{j + 1:02d}", f"port{i + 1}"),
+                stor,
+                f"{node}/ib-storage{j}",
+            )
+    for m, node in enumerate(storage_nodes):
+        for j in range(2):
+            link(
+                port(node, f"ib-storage{j}"),
+                port(f"stor-fabric-{j + 1:02d}", f"port{len(nodes) + m + 1}"),
+                stor,
+                f"{node}/ib-storage{j}",
+            )
+
+    # 4. In-band management: two per node across the two SN4600C.
+    inband = cfg["in_band"]
+    for i, node in enumerate(nodes):
+        for j in range(2):
+            link(
+                port(node, f"inband{j}"),
+                port(f"inband-{j + 1:02d}", f"eth{i + 1}"),
+                inband,
+                f"{node}/inband{j}",
+            )
+    for m, node in enumerate(storage_nodes):
+        for j in range(2):
+            link(
+                port(node, f"eth{j}"),
+                port(f"inband-{j + 1:02d}", f"eth{len(nodes) + m + 1}"),
+                inband,
+                f"{node}/eth{j}",
+            )
+
+    # 5. Out-of-band BMC: 36 endpoints split evenly across two SN2201.
+    oob = cfg["out_of_band"]
+    bmc_devices = nodes + storage_nodes
+    half = (len(bmc_devices) + 1) // 2
+    for i, node in enumerate(bmc_devices):
+        switch = 1 if i < half else 2
+        switch_port = (i % half) + 1
+        link(
+            port(node, "bmc"),
+            port(f"oob-{switch:02d}", f"eth{switch_port}"),
+            oob,
+            f"{node}/bmc",
+        )
+
+    if missing:
+        run.skipped += len(missing)
+        print(f"  .  {len(missing)} endpoints not found, e.g. {missing[0]}")
+
+    if not pending:
+        print("  =  all fabric cabling present")
+        return
+
+    if run.dry_run:
+        run.planned += len(pending)
+        print(f"  +  {len(pending)} fabric cables  (would create)")
+        return
+
+    for start in range(0, len(pending), 100):
+        batch = pending[start:start + 100]
+        run.nb.dcim.cables.create(batch)
+        run.created += len(batch)
+        print(f"  +  {len(batch)} fabric cables created")
+
+
 def build_device_types(run, spec):
     """Device types plus their interface and power-port templates."""
 
@@ -800,6 +951,7 @@ def main():
         build_devices(run, spec)
         sync_device_power_ports(run)
         build_power(run, spec)
+        build_fabric_cabling(run, spec)
     except requests.exceptions.ConnectionError:
         print(f"\nFAIL: lost connection to {info['url']}", file=sys.stderr)
         return 1
