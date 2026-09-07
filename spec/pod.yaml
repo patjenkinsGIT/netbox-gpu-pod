@@ -48,6 +48,15 @@ rack_type:
   outer_unit: mm
   max_weight: 1360
   weight_unit: kg
+  # NetBox 4.7 added cooling fields to rack types. Declared now that it is
+  # expressible: every rack in this pod is air-cooled, and the same cabinet is
+  # reused for the liquid-cooled pod's CDU rack in spec/pod-gb200.yaml, where
+  # it is declared identically.
+  #
+  # cooling_capacity is deliberately NOT declared -- see the note on the same
+  # rack type in pod-gb200.yaml. It is a type-level field with no single
+  # honest value across the racks that share this cabinet.
+  cooling_capability: air-only
 
 # Device types. Component names use the same [start-end] range syntax the
 # NetBox UI offers, but note the REST API does NOT expand it -- build_pod.py

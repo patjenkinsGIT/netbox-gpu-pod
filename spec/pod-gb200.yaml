@@ -1,0 +1,753 @@
+# Reference GPU Pod 2 -- liquid-cooled GB200 NVL72, declarative spec
+#
+# Companion to spec/pod.yaml, not a replacement for it. That file describes an
+# air-cooled DGX H100 scalable unit in site "Reference Pod 1"; this one
+# describes a liquid-cooled DGX GB200 NVL72 scalable unit in site "Reference
+# Pod 2". They share a region and several device types and rack roles, and
+# nothing here writes to any object the H100 model owns.
+#
+#     python scripts/build_pod.py --spec spec/pod-gb200.yaml --dry-run
+#
+# Objects declared in BOTH files are deliberate. build_pod.py reconciles rather
+# than creates, so the second spec run over a shared object should report "="
+# -- which is a fidelity check on this file, in the same way S4 slice 3
+# dry-ran the DGX H100 type as "=" against the hand-built original.
+#
+# SOURCED / ASSUMED labelling works exactly as in pod.yaml, with one addition.
+# NVIDIA publishes no data-center design guide for GB200 -- the design-guides
+# set stops at H100 -- so every electrical and thermal figure below comes from
+# the reference architecture or the user guide, and there are more assumptions
+# here than in pod.yaml. They are marked, and the ones that matter most are
+# restated in docs/design-notes.md rather than left only in this file.
+
+meta:
+  description: One NVIDIA DGX GB200 NVL72 scalable unit (8 racks, 576 GPUs)
+  sources:
+    architecture: https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/dgx-superpod-architecture.html
+    components: https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/dgx-superpod-components.html
+    fabrics: https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html
+    user_guide: https://docs.nvidia.com/dgx/dgxgb200-user-guide/hardware.html
+  # NOT a source, and named here so nobody goes looking for it: there is no
+  # GB200 equivalent of the H100 electrical design guide that pod.yaml cites.
+
+# Shared with pod.yaml. Declared identically so a run over either spec finds
+# the same object and reports no drift.
+region:
+  name: US-East
+  slug: us-east
+
+# A SEPARATE SITE, not extra racks in Data Hall A. Three reasons, in order of
+# weight:
+#   1. Reference Pod 1 is a finished, published artifact. Mixing GB200 racks
+#      into it invalidates its screenshots, exports and rack counts.
+#   2. CoolingSource is site-scoped, so a new site gives the cooling plant a
+#      clean home instead of threading it past Panel A/B/C.
+#   3. The comparison this phase exists to produce is a per-site filter rather
+#      than a per-rack-role one, which keeps export_reports.py simple.
+site:
+  name: Reference Pod 2
+  slug: reference-pod-2
+  status: active
+  description: Single DGX GB200 NVL72 scalable unit -- liquid-cooled reference model
+
+# Locations are scoped to a site, so this cannot reuse Data Hall A.
+location:
+  name: Data Hall B
+  slug: data-hall-b
+  status: active
+
+# NOTE THE SHAPE CHANGE. pod.yaml declares a single `rack_type:`, because one
+# cabinet held every rack in that pod. This pod has two: NVIDIA ships the NVL72
+# as an integrated rack system, and the CDU rack is an ordinary cabinet. So
+# this key is a LIST and each rack names its type by slug.
+#
+# build_pod.py reads spec["rack_type"] singular. This will fail on the first
+# dry run. That is deliberate -- see the note at the end of this file.
+rack_types:
+
+  # The NVL72 cabinet is delivered as a system, not populated on site.
+  #
+  # ASSUMED, and this needs flagging clearly: NVIDIA's own pages state
+  # "1RU compute trays" and list what the rack contains, but publish no rack
+  # height, dimensions or weight anywhere I could find. The figures below are
+  # from OEM product listings (Supermicro, Gigabyte, HPE QuickSpecs), which
+  # are secondary sources describing their own builds of the design. The
+  # 21-inch ORV3 question in particular is NOT settled by anything NVIDIA
+  # publishes; 19-inch is modelled here because NVIDIA's text says "1RU".
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: GB200 NVL72 Rack
+    slug: gb200-nvl72-rack
+    form_factor: 4-post-cabinet
+    width: 19
+    u_height: 48
+    starting_unit: 1
+    outer_width: 600
+    outer_depth: 1068
+    outer_unit: mm
+    max_weight: 1800
+    weight_unit: kg
+    # SOURCED: hybrid, not liquid-only. "The most power-intensive components,
+    # such as GPUs and CPUs, are liquid cooled. Other components are air
+    # cooled." Declaring liquid-only would overstate what the rack does and
+    # would hide the fact that this rack still needs room air handling.
+    cooling_capability: hybrid
+    cooling_capacity: 120
+    description: Integrated NVL72 rack system -- 72 Blackwell GPUs, 36 Grace CPUs
+
+  # Shared with pod.yaml, byte for byte. Used here for the CDU rack only.
+  # Declared in full rather than referenced so that "clone the repo, run the
+  # script" holds for this spec on an empty NetBox too -- the gap S4 closed
+  # for the DGX H100 type, not reopened here.
+  - manufacturer: Vertiv
+    manufacturer_slug: vertiv
+    model: 48U 800x1200 Cabinet
+    slug: 48u-800x1200-cabinet
+    form_factor: 4-post-cabinet
+    width: 19
+    u_height: 48
+    starting_unit: 1
+    outer_width: 800
+    outer_depth: 1200
+    outer_unit: mm
+    max_weight: 1360
+    weight_unit: kg
+    # True of every rack built from this cabinet, in both pods. Declared here
+    # and identically in pod.yaml, so either spec reconciles it to the same
+    # value.
+    #
+    # cooling_capacity is deliberately NOT declared. It is a rack-TYPE field,
+    # so a single number would have to serve every rack built from this
+    # cabinet -- the air-cooled pod's compute racks and this pod's CDU rack
+    # alike. Since cooling capacity depends on what is installed and how the
+    # room is arranged rather than on the cabinet model, no honest single
+    # value exists. Left unset rather than invented.
+    cooling_capability: air-only
+
+device_types:
+
+  # ---------------------------------------------------------------- compute
+  #
+  # SOURCED: "18x 1RU compute trays, each with 2 Grace CPUs and 4 Blackwell
+  # GPUs" per rack.
+  #
+  # POWER IS DERIVED, NOT SOURCED. NVIDIA publishes the rack total
+  # ("approximately 120kW") and does not break it down per tray. Two Grace
+  # CPUs and four Blackwell GPUs is two GB200 superchips, and the superchip is
+  # widely reported at ~2700 W TDP -- but that figure appears in secondary
+  # sources, not on an NVIDIA page consulted here. 2 x 2700 = 5400 W.
+  #
+  # The check that makes it usable: 18 x 5400 + 9 x 2500 = 119.7 kW against a
+  # published ~120 kW. The residual is accounted for below rather than
+  # rounded away.
+  #
+  # ONE POWER PORT, not six. This is the first real departure from the H100
+  # model: a DGX H100 carried its own 4+2 PSU redundancy, so losing a rack
+  # power source cost it two supplies out of six. An NVL72 tray takes a single
+  # DC feed off the busbar and has no redundancy of its own -- all of it moved
+  # upstream into the power shelves. allocated and maximum are therefore the
+  # same number, because there is no "others lost" case at this level.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: DGX GB200 Compute Tray
+    slug: gb200-compute-tray
+    u_height: 1
+    full_depth: true
+    airflow: front-to-rear
+    cooling_method: hybrid
+    description: 2x Grace CPU, 4x Blackwell GPU -- cold-plate liquid, air for NIC/storage
+    power_ports:
+      - name: dc-in
+        type: dc-terminal
+        maximum_draw: 5400
+        allocated_draw: 5400
+        description: 50-51 VDC from rack busbar
+    interfaces:
+      # SOURCED: "4x NVIDIA ConnectX-7 single port 400G OSFP NIC" for the
+      # compute fabric. FOUR rails, not eight -- one per GPU in the tray,
+      # where the H100 had eight per system. The rail count follows GPUs per
+      # chassis, and that is the single biggest fabric difference between the
+      # two pods.
+      - name: cx7-rail[0-3]
+        type: infiniband-ndr-4x
+      # SOURCED: "2x NVIDIA BlueField-3 DPU, dual port 400G Infiniband or
+      # Ethernet". Modelled as Ethernet because the RA puts storage and
+      # in-band on Spectrum SN5600, not InfiniBand -- the other significant
+      # change from the H100 pod, whose storage fabric was InfiniBand.
+      - name: bf3-[0-3]
+        type: 400gbase-x-osfp
+      # SOURCED: "1x 1GbE x RJ45 from the compute tray BMC module" and
+      # "2x 1GbE x RJ45 from the BlueField-3 BMC interface".
+      - name: bmc
+        type: 1000base-t
+        mgmt_only: true
+      - name: bf3-bmc[0-1]
+        type: 1000base-t
+        mgmt_only: true
+    cooling_intakes:
+      # ASSUMED connector and flow. NVIDIA states cold-plate liquid cooling
+      # but publishes no connector type, line size or per-tray flow rate.
+      # UQD is the near-universal choice for this class of equipment and is
+      # what the OCP cold-plate specifications call for.
+      #
+      # 5.6 L/min per tray comes from the rack figure below divided by 27
+      # liquid-cooled trays, not from a datasheet.
+      - name: cold-plate
+        type: uqd
+        diameter: 12
+        diameter_unit: mm
+        max_flow: 5.6
+        max_flow_unit: lpm
+
+  # SOURCED: "9x 1RU NVLink switch trays" per rack.
+  #
+  # NO INTERFACES, DELIBERATELY. The NVLink fabric is a backplane -- the
+  # compute trays reach the switch trays through the rack's cartridge
+  # connectors, not through cables. There is nothing for NetBox's cable model
+  # to hold. Worth stating outright rather than leaving as an omission that
+  # reads like forgetfulness: the densest fabric in this rack is the one the
+  # DCIM tool cannot see at all.
+  #
+  # ASSUMED power: 2500 W is the residual once 18 compute trays at 5400 W are
+  # subtracted from the published ~120 kW rack total. It is arithmetic against
+  # a sourced total, not a published per-tray figure.
+  #
+  # ASSUMED cooling method: NVIDIA says GPUs and CPUs are liquid cooled and
+  # does not say what an NVSwitch tray is. Liquid is the reasonable reading at
+  # this power density, but it is a reading.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: NVLink Switch Tray
+    slug: nvlink-switch-tray
+    u_height: 1
+    full_depth: true
+    airflow: front-to-rear
+    cooling_method: liquid
+    description: NVSwitch tray -- NVLink is a backplane, so no cabled interfaces
+    power_ports:
+      - name: dc-in
+        type: dc-terminal
+        maximum_draw: 2500
+        allocated_draw: 2500
+        description: 50-51 VDC from rack busbar
+    cooling_intakes:
+      - name: cold-plate
+        type: uqd
+        diameter: 12
+        diameter_unit: mm
+        max_flow: 5.6
+        max_flow_unit: lpm
+
+  # ------------------------------------------------------------------ power
+  #
+  # SOURCED: "The power shelf used for DGX GB200 SuperPOD has six 5.5kW PSUs
+  # configured as N redundancy and can deliver up to 33kW of power. There are
+  # eight total power shelves in a single DGX GB200 NVL72 rack system", with
+  # "N+N redundancy" across the eight, and "Power whips energize power shelves
+  # from a remote power panel."
+  #
+  # THE `input` PORT CARRIES NO DRAW VALUES. Same rule, same reason, same
+  # trap as the rPDU in pod.yaml: NetBox aggregates downstream load through a
+  # pass-through power port ONLY when both maximum_draw and allocated_draw are
+  # empty. The 33 kW rating lives in the description, where it informs a
+  # reader without entering the arithmetic. The nulls are explicit so drift is
+  # detectable -- an omitted field would mean "don't care" and is exactly how
+  # a stale value survived on 33 rPDUs in S4.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: NVL72 Power Shelf
+    slug: gb200-power-shelf
+    u_height: 1
+    full_depth: true
+    airflow: front-to-rear
+    cooling_method: air
+    description: 6x 5.5 kW PSU, 33 kW output, AC in / 50-51 VDC out
+    power_ports:
+      - name: input
+        maximum_draw: null
+        allocated_draw: null
+        description: 3-phase AC whip from remote power panel, 33 kW rated output
+    power_outlets:
+      - name: dc-out
+        type: dc-terminal
+        power_port: input
+
+  # THE BUSBAR IS THE INTERESTING OBJECT IN THIS FILE.
+  #
+  # SOURCED that it exists: "The power shelves convert AC power into nominal
+  # 50V-51V DC output and distribute it through the bus bar to the rack
+  # components." So this is a real component named in the vendor's own text,
+  # not a modelling invention.
+  #
+  # WHAT IT COSTS TO MODEL: NetBox's power model is a tree. Every outlet has
+  # exactly one parent power port, and every port takes exactly one cable. A
+  # busbar is not a tree -- it is a single shared plane that eight shelves
+  # push into and twenty-seven trays pull from, with no correspondence between
+  # any particular shelf and any particular tray.
+  #
+  # Modelled here as eight input ports and 32 outlets divided four-per-input.
+  # THAT DIVISION IS FICTION. It is chosen so the arithmetic aggregates
+  # correctly to the rack and the feeds; it says nothing true about which
+  # shelf carries which tray, because on a shared bus that question has no
+  # answer. Stated here so the fiction is visible in the spec rather than
+  # discovered later by someone reading a topology diagram literally.
+  #
+  # THE CONSEQUENCE FOR N+N: the H100 rack's redundancy was expressed in
+  # CABLING -- six PSUs across three rPDUs, so NetBox could compute the N-1
+  # case by walking cables, which is what made the 20.4 kW figure independent
+  # rather than restated. The NVL72's redundancy is expressed in a BUS, and
+  # splitting the load eight ways models normal operation only. The N+N
+  # property cannot be derived from this model. It has to be asserted, and the
+  # power report must say so instead of printing a verdict it did not earn.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: NVL72 DC Busbar
+    slug: gb200-busbar
+    u_height: 0
+    full_depth: false
+    airflow: passive
+    cooling_method: air
+    description: 50-51 VDC bus -- shelf-to-outlet mapping is modelling fiction, see spec
+    power_ports:
+      - name: shelf[1-8]
+        type: dc-terminal
+        maximum_draw: null
+        allocated_draw: null
+    power_outlets:
+      - name: tray[1-4]
+        type: dc-terminal
+        power_port: shelf1
+      - name: tray[5-8]
+        type: dc-terminal
+        power_port: shelf2
+      - name: tray[9-12]
+        type: dc-terminal
+        power_port: shelf3
+      - name: tray[13-16]
+        type: dc-terminal
+        power_port: shelf4
+      - name: tray[17-20]
+        type: dc-terminal
+        power_port: shelf5
+      - name: tray[21-24]
+        type: dc-terminal
+        power_port: shelf6
+      - name: tray[25-28]
+        type: dc-terminal
+        power_port: shelf7
+      - name: tray[29-32]
+        type: dc-terminal
+        power_port: shelf8
+
+  # ---------------------------------------------------------------- cooling
+  #
+  # The rack coolant manifold, and the direct structural analogue of the rPDU:
+  # one intake fed from upstream, many outflows dropping to equipment, each
+  # outflow naming its parent intake. NetBox's cooling-outflow-templates carry
+  # a cooling_intake foreign key for exactly this, the way power-outlet
+  # templates carry power_port -- so the S3 trap transfers verbatim. An
+  # outflow with no parent intake leaves no path, silently.
+  #
+  # ASSUMED throughout: NVIDIA publishes no manifold specification, connector
+  # type, line size or flow rate for the NVL72.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: NVL72 Rack Manifold
+    slug: gb200-rack-manifold
+    u_height: 0
+    full_depth: false
+    airflow: passive
+    cooling_method: liquid
+    description: PLACEHOLDER SPEC -- vertical coolant manifold, 27 drops
+    cooling_intakes:
+      - name: tcs-in
+        type: uqd
+        diameter: 50
+        diameter_unit: mm
+        max_flow: 150
+        max_flow_unit: lpm
+    cooling_outflows:
+      - name: drop[1-27]
+        type: uqd
+        diameter: 12
+        diameter_unit: mm
+        cooling_intake: tcs-in
+
+  # ENTIRELY ASSUMED, in the same spirit as the storage node in pod.yaml.
+  # NVIDIA's GB200 reference architecture names no CDU model, capacity, count
+  # or facility water condition. This exists so the cooling topology has a
+  # middle tier and so the rack manifolds have an upstream; every number below
+  # is a placeholder and must be labelled as one in the README.
+  #
+  # ONE MODELLING NOTE WORTH KEEPING: declaring the outflows' parent as the
+  # facility intake says "this outflow is supplied by that intake", which for
+  # a liquid-to-liquid CDU is thermally true and hydraulically false -- the
+  # two loops are isolated across a heat exchanger and no fluid crosses. The
+  # FK is the closest thing the model has to "downstream of", so it is used
+  # that way, with the caveat recorded rather than silently accepted.
+  - manufacturer: Generic
+    manufacturer_slug: generic
+    model: Coolant Distribution Unit (reference)
+    slug: cdu-reference
+    u_height: 12
+    full_depth: true
+    airflow: passive
+    cooling_method: liquid
+    description: PLACEHOLDER -- no CDU is named in NVIDIA's GB200 reference architecture
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c20
+        maximum_draw: 9000
+        allocated_draw: 4500
+    cooling_intakes:
+      - name: fws-in
+        type: npt
+        diameter: 100
+        diameter_unit: mm
+        max_flow: 900
+        max_flow_unit: lpm
+    cooling_outflows:
+      - name: tcs-out[1-4]
+        type: uqd
+        diameter: 50
+        diameter_unit: mm
+        cooling_intake: fws-in
+
+  # Shared with pod.yaml. SOURCED: "2x TOR Switches for management" per NVL72
+  # rack, and the RA names SN2201 for out-of-band. Declared identically to
+  # pod.yaml so a run over this spec reports "=" against the existing type.
+  - manufacturer: NVIDIA
+    manufacturer_slug: nvidia
+    model: SN2201
+    slug: sn2201
+    u_height: 1
+    full_depth: false
+    weight: 7.41
+    weight_unit: kg
+    airflow: front-to-rear
+    description: Spectrum 1GbE management switch -- out-of-band / BMC fabric
+    power_ports:
+      - name: psu[1-2]
+        type: iec-60320-c14
+        maximum_draw: 98
+        allocated_draw: 49
+    interfaces:
+      - name: eth[1-48]
+        type: 1000base-t
+      - name: uplink[1-4]
+        type: 100gbase-x-qsfp28
+
+# Shared with pod.yaml, plus one new role. Cooling plant is neither compute
+# nor network nor storage, and giving it its own role keeps it out of the
+# per-role power rollups where it would otherwise distort the comparison.
+rack_roles:
+  - {name: Compute, slug: compute, color: "2196f3"}
+  - {name: Cooling, slug: cooling, color: "00acc1"}
+
+# Nine racks: eight NVL72 systems and one CDU rack.
+#
+# SOURCED: "a single SU (8 DGX GB200 rack systems)". Eight is the scalable
+# unit, not a number chosen for convenience -- which is what makes the
+# comparison against the H100 SU legitimate rather than arbitrary.
+#
+# NETWORK AND MANAGEMENT RACKS ARE NOT HERE YET, and that is a named gap
+# rather than an oversight. The compute fabric needs QM9700 counts per SU and
+# the storage fabric needs SN5600 specifications, neither of which has been
+# sourced yet. Until they are, "racks per 1,000 GPUs" can only be quoted for
+# compute racks, and the README must say so. Adding invented infrastructure
+# racks to make a headline number look better is the exact failure this
+# project keeps writing up.
+racks:
+  - {name: G01, role: compute, type: gb200-nvl72-rack}
+  - {name: G02, role: compute, type: gb200-nvl72-rack}
+  - {name: G03, role: compute, type: gb200-nvl72-rack}
+  - {name: G04, role: compute, type: gb200-nvl72-rack}
+  - {name: G05, role: compute, type: gb200-nvl72-rack}
+  - {name: G06, role: compute, type: gb200-nvl72-rack}
+  - {name: G07, role: compute, type: gb200-nvl72-rack}
+  - {name: G08, role: compute, type: gb200-nvl72-rack}
+  # X01 declared no cooling fields of its own, and an earlier version of this
+  # spec did. NetBox accepted the write, build_pod.py reported "updated: 1",
+  # and the value never landed -- cooling_capability and cooling_capacity are
+  # inherited from the rack TYPE and a per-rack value is silently discarded,
+  # the same way u_height and width are. The next dry run reported the same
+  # update pending, which is how it was caught: a reconciler that fixes the
+  # same thing forever is telling you the fix does not work.
+  #
+  # So the capability lives on the rack type above, and the CDU rack's own
+  # ~20 kW of pump and electrical heat has nowhere in the model to go.
+  - {name: X01, role: cooling, type: 48u-800x1200-cabinet}
+
+# TWO panels, not three -- and this is the headline change in the power model.
+#
+# pod.yaml uses three panels because NVIDIA's H100 electrical guide specifies
+# a minimum of three sources per rack at N+1, each sized for 50% of peak.
+# NVIDIA's GB200 material says something different: the eight power shelves
+# are configured N+N. N+N is two sides, each able to carry the whole load, so
+# two independent panels is what matches the stated redundancy.
+#
+# NOT SOURCED, and worth saying loudly because a search will suggest
+# otherwise: several secondary write-ups assert "three independent power
+# sources per rack" for GB200. That is the H100 rule being carried across by
+# people summarising, and NVIDIA's GB200 pages do not say it. Treating it as
+# sourced would repeat the S7 mistake -- taking an illustration for a
+# specification -- in the opposite direction.
+power_panels:
+  - Panel D
+  - Panel E
+
+# EIGHT FEEDS PER RACK, one per power shelf, alternating between the two
+# panels so that four shelves sit on each side of the N+N split.
+#
+# NOTE THE SHAPE CHANGE from pod.yaml, which zips a panel list against a
+# letter list to make exactly three feeds. This needs a count and an
+# alternation. build_pod.py implements the former only.
+#
+# THE CIRCUIT IS DELIBERATELY UNCHANGED from pod.yaml: 415 V, 60 A,
+# three-phase, 80% derate = 34,501 VA, the same circuit that fed a third of a
+# DGX H100 rack. Keeping it makes the density comparison direct, and it
+# surfaces a real problem rather than hiding it: one shelf's 33 kW OUTPUT
+# against 34,501 VA of derated capacity is roughly 96% loaded before
+# conversion losses are counted at all. A real design would step up to a
+# larger circuit here. Modelled as-is so the report can show why.
+#
+# Scoped to the eight NVL72 racks. pod.yaml feeds every rack it declares,
+# which worked when every rack was a 48U cabinet full of IEC-fed equipment.
+# X01 is not: its two CDUs have C20 inlets and there is no rPDU in that rack
+# to plug them into. Giving X01 eight three-phase whips to nothing would be
+# tidier-looking and wrong, so CDU power distribution is left as a named gap
+# for a later slice, alongside the network and management racks.
+power_feeds:
+  name_template: "{rack}-{n}"
+  racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+  panels: [Panel D, Panel E]
+  count: 8
+  supply: ac
+  phase: three-phase
+  voltage: 415
+  amperage: 60
+  max_utilization: 80
+  type: primary
+  status: active
+
+# The power chain has a different shape from pod.yaml's, so it is declared
+# rather than assumed by the generator:
+#
+#   PowerFeed  ->  power shelf `input`        (8 per rack, one per feed)
+#   shelf `dc-out`  ->  busbar `shelf{n}`     (8 per rack)
+#   busbar `tray{n}`  ->  tray `dc-in`        (27 per rack)
+#
+# pod.yaml's chain was feed -> rPDU input -> outlet -> device PSU, three hops.
+# This is four, because the AC/DC conversion is a rack component rather than
+# something that happens inside each server's power supply.
+#
+# The two ToR switches are NOT in this chain. NVIDIA states that the rack
+# contains them and does not state what powers them; there is no AC
+# distribution modelled inside an NVL72 rack, and inventing one to tidy up the
+# diagram would be the UFM-InfiniBand-port mistake again. Their PSUs are left
+# uncabled and their ~0.3 kW is excluded from the modelled rack load, which is
+# precisely why the model totals 119.7 kW against a published ~120 kW.
+#
+# The shelf and busbar are named BY DEVICE TYPE, not by a name prefix. The
+# original cabling pass found rPDUs by looking for devices called "pdu-<rack>-",
+# which worked on exactly one pod and is a large part of why this spec broke
+# the generator. A device type is what the spec already declares; a name prefix
+# is a convention the code was quietly relying on.
+power_cabling:
+  topology: busbar
+  shelf_type: gb200-power-shelf
+  busbar_type: gb200-busbar
+  shelves_per_rack: 8
+  trays_per_rack: 27
+
+# ---------------------------------------------------------------------------
+# COOLING
+#
+# Read docs/design-notes.md before trusting any number this produces.
+#
+# NetBox 4.7's cooling model has capacity at every level and demand at none:
+# there is no allocated_draw equivalent on a cooling intake, and no cable or
+# foreign key joining a CoolingFeed to any device. So unlike the power chain,
+# NOTHING HERE AGGREGATES. NetBox will hold this topology and will not compute
+# a single number from it.
+#
+# Every cooling utilisation figure in the exports is therefore ours, derived
+# from the power model, and has to be labelled as derived. In S6 the N-1
+# verdict counted as independent reproduction because NetBox walked the cable
+# path and we only read the result off. That is not available here, and
+# claiming it would be the "tool reported success" failure in new clothing.
+#
+# ASSUMED: everything below. Chiller capacity, count, fluid, delta-T, flow
+# rates and the liquid-versus-air split are all unpublished for this system.
+# Flow figures use Q = kW / (4.18 x deltaT), deltaT = 10 K.
+cooling:
+  sources:
+    - name: Chiller Plant A
+      type: chiller
+      fluid_type: water
+      cooling_capacity: 600
+      status: active
+      description: ASSUMED -- no plant is specified in NVIDIA's GB200 material
+    - name: Chiller Plant B
+      type: chiller
+      fluid_type: water
+      cooling_capacity: 600
+      status: active
+      description: ASSUMED -- second plant for N+1 at the facility level
+
+  # One facility-water feed per CDU. The feed's rack is X01, where the CDUs
+  # live, because that is where the facility loop physically terminates.
+  #
+  # THE GAP: a CoolingFeed cannot reference a device's intake -- no cable, no
+  # FK. So the join from this feed to cdu-01's `fws-in` exists in the real
+  # plant and not in the model. Co-location in X01 is the only association
+  # NetBox can express, and it is not a queryable one. This is the single
+  # place where the cooling model is weaker than the power model it mirrors,
+  # and it is left visible rather than worked around.
+  feeds:
+    - {name: CDU-01-FWS, source: Chiller Plant A, rack: X01, cooling_capacity: 600, max_flow: 900, max_flow_unit: lpm}
+    - {name: CDU-02-FWS, source: Chiller Plant B, rack: X01, cooling_capacity: 600, max_flow: 900, max_flow_unit: lpm}
+
+  # The technology cooling loop, which the FK chain CAN express:
+  #
+  #   cdu-NN `tcs-out{r}`  ->  manifold-gNN `tcs-in`   (intake names outflow)
+  #   manifold-gNN `drop{n}`  ->  tray `cold-plate`    (intake names outflow)
+  #
+  # Two CDUs at four racks each. ASSUMED: 8 x ~102 kW of liquid load is
+  # roughly 816 kW, so two 600 kW units carry it with one spare only if the
+  # split is even and nothing fails. Sized for N+1 at the plant and NOT at the
+  # CDU -- stated because it is a real weakness of this placeholder sizing,
+  # not something to discover from the report later.
+  topology:
+    racks_per_cdu: 4
+    drops_per_rack: 27
+    # ASSUMED: the fraction of rack heat rejected to liquid rather than air.
+    # NVIDIA states that GPUs and CPUs are liquid cooled and everything else
+    # is air cooled, but publishes no split. 0.85 is a common industry figure
+    # for direct-to-chip at this density and is a guess.
+    liquid_fraction: 0.85
+
+device_roles:
+  - {name: GPU Compute Node, slug: gpu-compute-node, color: "9c27b0"}
+  - {name: NVLink Switch, slug: nvlink-switch, color: "76b900"}
+  - {name: Power Distribution, slug: power-distribution, color: "607d8b"}
+  - {name: Management Switch, slug: management-switch, color: "ff9800"}
+  - {name: Cooling Distribution, slug: cooling-distribution, color: "00acc1"}
+
+# ELEVATION IS ENTIRELY ASSUMED.
+#
+# NVIDIA lists what an NVL72 rack contains and never says where any of it
+# sits. Nothing below is sourced. It is a plausible arrangement -- power at
+# the extremes, NVLink switching in the middle so cartridge runs to the
+# compute trays above and below are symmetric and short -- and it must be
+# labelled as invented in the README, exactly the way the storage node was.
+#
+# Compare with pod.yaml's compute rack, where the profile IS sourced: servers
+# from U3, a 3 RU airflow gap, horizontal rPDUs at the top. There is no
+# equivalent published profile for this rack, so the honest position is that
+# this elevation demonstrates the model rather than reproducing a design.
+#
+#   U1-U4    power shelves 1-4
+#   U5-U13   compute trays 1-9
+#   U14-U22  NVLink switch trays 1-9
+#   U23-U31  compute trays 10-18
+#   U32-U35  power shelves 5-8
+#   U36-U37  ToR management switches
+#   U38-U48  free -- cable management and manifold service access
+device_groups:
+
+  - description: 8x power shelf per rack, split top and bottom
+    device_type: gb200-power-shelf
+    role: power-distribution
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 8
+    name_template: "psh-{rack_lower}-{n}"
+    positions: [1, 2, 3, 4, 32, 33, 34, 35]
+    face: front
+
+  # 0U -- the bus runs in the side channel and occupies no rack units, so
+  # position and face are omitted entirely (same handling as pod.yaml's 0U
+  # devices before the layout correction moved rPDUs to horizontal).
+  - description: DC busbar, one per rack
+    device_type: gb200-busbar
+    role: power-distribution
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 1
+    name_template: "busbar-{rack_lower}"
+
+  # Positions are an explicit list because the NVLink trays interrupt the
+  # stride -- the same reason pod.yaml lists [3, 11, 22, 30] rather than a
+  # start and a step.
+  - description: 18x GB200 compute tray per rack
+    device_type: gb200-compute-tray
+    role: gpu-compute-node
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 18
+    name_template: "ct-{rack_lower}-{n:02d}"
+    positions: [5, 6, 7, 8, 9, 10, 11, 12, 13, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+    face: front
+
+  - description: 9x NVLink switch tray per rack
+    device_type: nvlink-switch-tray
+    role: nvlink-switch
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 9
+    name_template: "nvs-{rack_lower}-{n:02d}"
+    start_position: 14
+    position_step: 1
+    face: front
+
+  # Present because NVIDIA says the rack contains them. Power deliberately
+  # uncabled -- see the note in power_cabling above.
+  - description: 2x ToR management switch per rack
+    device_type: sn2201
+    role: management-switch
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 2
+    name_template: "tor-{rack_lower}-{n:02d}"
+    positions: [36, 37]
+    face: front
+
+  - description: rack coolant manifold, one per rack
+    device_type: gb200-rack-manifold
+    role: cooling-distribution
+    racks: [G01, G02, G03, G04, G05, G06, G07, G08]
+    per_rack: 1
+    name_template: "manifold-{rack_lower}"
+
+  - description: 2x CDU serving four racks each
+    device_type: cdu-reference
+    role: cooling-distribution
+    racks: [X01]
+    per_rack: 2
+    name_template: "cdu-{g:02d}"
+    positions: [1, 13]
+    face: front
+
+# ---------------------------------------------------------------------------
+# WHAT THIS FILE IS EXPECTED TO BREAK
+#
+# Written before running it, so the prediction can be checked against the
+# result rather than reconstructed afterwards.
+#
+# build_pod.py was written against pod.yaml and has pod.yaml's assumptions
+# compiled into it. A spec-driven generator is only as general as the number
+# of specs it has actually been run against, which until now is one.
+#
+#   1. spec["rack_type"] is read as a single mapping. This file has a list.
+#   2. Power feed generation zips panels against letters for exactly three
+#      feeds per rack. This needs eight, alternating across two panels.
+#   3. build_power_cabling() looks for devices named "pdu-{rack}-" and skips
+#      any rack without exactly three. No rack here has any.
+#   4. build_fabric_cabling() hardcodes "dgx-", "leaf-", "spine-", eight rails
+#      and 32 nodes.
+#   5. Nothing reads `cooling`, `rack_types[].cooling_capability`,
+#      `racks[].type`, or any cooling_* key on a device type. THE GENERATOR
+#      WILL IGNORE THEM WITHOUT COMPLAINT -- there is no check that it
+#      understood the whole spec. A silently ignored declaration is the same
+#      class of failure as a get-or-create that never diffs attributes: the
+#      run reports success and the model is not what the file says.
+#
+# Item 5 is the one worth fixing first, and the fix is small: validate the
+# top-level keys against what the generator handles, and fail loudly on the
+# rest.

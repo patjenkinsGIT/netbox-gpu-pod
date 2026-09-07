@@ -61,3 +61,23 @@ dump(nb.dcim.power_ports, "type", "power port types: IEC 60320", match="iec-6032
 
 # Device airflow, so the spec uses the right value.
 dump(nb.dcim.device_types, "airflow", "device type airflow")
+
+# --- phase 2: GB200 NVL72 -------------------------------------------------
+#
+# The liquid-cooled pod needs types the H100 model never used: 400G and 800G
+# Ethernet for the BlueField-3 / SN5600 storage fabric, and something to
+# represent a 50 V DC busbar drop rather than an IEC inlet. Same rule as
+# above -- a slug read off the instance, not one recalled from a datasheet.
+
+# BlueField-3 storage / in-band ports.
+dump(nb.dcim.interfaces, "type", "interface types: 400G", match="400g")
+
+# SN5600 is a 64-port 800 GbE switch -- confirm 4.7 can express that at all.
+dump(nb.dcim.interfaces, "type", "interface types: 800G", match="800g")
+
+# The NVL72 distributes 50-51 V DC over a busbar, not AC to each tray. If
+# NetBox has no DC connector type, the tray input stays untyped -- which is
+# what the rPDU `input` port already does, and is a finding rather than a
+# blocker.
+dump(nb.dcim.power_ports, "type", "power port types: DC", match="dc")
+dump(nb.dcim.power_outlets, "type", "power outlet types: DC", match="dc")
