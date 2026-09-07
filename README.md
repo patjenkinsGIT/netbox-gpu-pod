@@ -31,6 +31,7 @@ spine switches, M01 the UFM pair and management fabric, S01 the storage nodes.*
 | `scripts/show_choices.py` | Prints the type slugs the live instance accepts |
 | `scripts/export_reports.py` | Generates the power report, cable schedule and rail map |
 | `docs/design-notes.md` | What is sourced, what is a choice, what is a guess |
+| `docs/methodology.md` | How the generator got from get-or-create to reconciling |
 | `docs/commissioning-checklist.md` | Site readiness through handover |
 | `exports/` | Generated CSVs — power report, cable schedule, rail map |
 | `env-example/` | `.env` and compose override to copy into `netbox-docker/` |
