@@ -1,0 +1,11 @@
+site,rack,role,devices,u_used,u_total,feeds,feed_capacity_va,allocated_w,uncabled_w,worst_feed_w,worst_feed_pct,redundancy,surviving_feeds,loss_per_feed_w,loss_util_pct,verdict
+Reference Pod 2,G01,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G02,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G03,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G04,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G05,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G06,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G07,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,G08,Compute,39,37.0,48,8,34501,119896,196,16200,47.0,N+N,4,29925,86.7,PASS
+Reference Pod 2,X01,Cooling,2,24.0,48,0,0,18000,18000,0,0.0,N+N,0,0,0.0,NO FEEDS
+Reference Pod 2,SITE TOTAL,,314,320.0,432,64,,977168,19568,16200,47.0,N+N,,,86.7,SEE ROWS

@@ -1,18 +1,19 @@
 # From Create to Converge
 
-How this generator was built, in eight stages, and what each stage cost to learn.
+How this generator was built, in nine stages, and what each stage cost to learn.
 
 A generator that populates a database and a generator that reconciles one look
 identical right up until the moment they disagree. This is the record of building
-the second kind.
+the second kind — and then of discovering that a reconciler which has only ever
+run against one specification is a third thing again.
 
 | | |
 |---|---|
-| Racks modelled | 12 |
-| Devices | 92 |
-| Cables | 970 |
-| Pod load | 359.6 kW |
-| Failures that reported success | 4 |
+| Racks modelled | 21, in two pods |
+| Devices | 406 |
+| Cables | 1,314 |
+| Modelled load | 1,336.8 kW |
+| Failures that reported success | 6 |
 
 ---
 
@@ -166,9 +167,58 @@ rail 3 -> leaf-04  (32 nodes)  PASS
 N-1 verdict: PASS    worst N-1 rack: C01 at 59.1%
 ```
 
+### 09 — Generality is claimed, not tested
+
+The generator was described as spec-driven, and it was: it read a specification
+and reconciled NetBox against it. What nobody could see was how much of *that
+particular* specification had been compiled into the tool, because there was
+only ever one specification to read.
+
+A second pod — liquid-cooled GB200 NVL72 racks, in a second site — found five
+in a single dry run.
+
+| Assumption | How it was encoded |
+|---|---|
+| One cabinet model per pod | `spec["rack_type"]`, singular |
+| Three power feeds per rack | a zip of panels against letters, with no count |
+| rPDUs exist and are named `pdu-<rack>-` | a string prefix in the cabling pass |
+| The site already exists | a bare lookup, then a dereference |
+| The generator reads the whole spec | nothing checked that it did |
+
+None was a bug in the ordinary sense. Each was true, went unwritten because it
+was true, and became false the moment the tool was asked to do something
+slightly different.
+
+**The fifth is the one that generalises.** An entire `cooling:` section
+produced no objects and no complaint — the run reported success and the model
+was not what the file said. That is the same failure as stage 06's
+get-or-create, one level up: existence was not convergence, and now
+*acknowledgement* was not action. A declarative spec makes a promise that the
+file is the desired end state, and a tool that discards part of the file
+breaks that promise quietly. Unrecognised keys are now errors.
+
+Then the same class of bug turned up again in a place nobody had thought to
+look. The **export script** iterated every rack in NetBox — correct while one
+pod existed, and silently wrong afterwards. It would have written a merged
+power report totalling 1.3 MW across two unrelated designs with nothing in the
+file saying so.
+
+That one is worth sitting with, because NetBox itself does the same thing and
+is right to. Its rack elevations page shows both pods and hands you a filter.
+**A UI can default to showing everything because a human is present to narrow
+it. A report cannot, because by the time anyone reads it the filtering
+decision is already baked in.** Every report is now scoped to one site and
+carries the site as a column — the filename says which pod, the column proves
+it.
+
+One prediction made before the run was wrong, which is worth recording too:
+the fabric-cabling pass was expected to break on its hardcoded device names
+and did not, because it returns early when a spec declares no fabric. The
+hardcoding is still there. It simply was not what this spec touched.
+
 ---
 
-## Four things that reported success while being wrong
+## Six things that reported success while being wrong
 
 | What it said | What was true | Root cause | Caught by |
 |---|---|---|---|
@@ -176,9 +226,19 @@ N-1 verdict: PASS    worst N-1 rack: C01 at 59.1%
 | `created: 0, updated: 0` | 33 of 36 rPDUs misconfigured | Get-or-create verifies existence and never diffs attributes | Opening a rack the generator built and reading the number |
 | `rail 0 -> leaf-01, dgx-c01-01, leaf-02 …` | Plausible-looking nonsense | Interfaces and power outlets are separate tables with independent id sequences; the lookup had no `object_type` filter | The report's own PASS/FAIL column |
 | Layout matched the vendor's figure | The figure is captioned as an example whose "quantities will vary" | Treating a drawing as a specification | Reading the paragraph around the diagram before restructuring |
+| A feed at `18,700 VA / 34,501 VA`, fully cabled, path Reachable | A shared busbar puts 14,962 VA on every shelf | Trays dealt round-robin across a name-sorted list, so the heavy ones clustered on the first shelves — a 40% spread invented by alphabetical order | Being asked why a number was higher than predicted |
+| `updated: 1` | Nothing changed | Rack cooling fields are inherited from the rack type; a per-rack write returns 200 and is discarded | The next dry run reporting the same update still pending |
 
-Three of the four printed a clean summary. Every one was found by looking at the
+Five of the six printed a clean summary. Every one was found by looking at the
 modelled thing rather than the run's output.
+
+The last two are worth separating, because they fail in opposite directions.
+The busbar allocator produced a **plausible number that was wrong** — nothing
+in the model was inconsistent, the arithmetic was internally sound, and the
+rack total was correct; only the distribution was invented. The cooling write
+produced **no change at all while reporting one**, which a reconciler is
+uniquely equipped to catch: it contradicted itself on the next run. A tool
+that fixes the same thing forever is telling you the fix does not work.
 
 ---
 
@@ -208,6 +268,31 @@ proved the moment it ran over that rack and changed nothing.
 
 ---
 
+## What transfers, added in phase two
+
+**A tool is only as general as the number of inputs it has been run against.**
+Not the number of times it has been run. The generator had run hundreds of
+times, idempotently, correctly, against one specification — and that proved
+nothing at all about the five assumptions baked into it.
+
+**Predict the failure in writing before running it.** The five assumptions
+above were listed in the spec file before the first dry run, so the result
+could be checked against the prediction rather than reconstructed afterwards.
+One of the five was wrong. That is only knowable because it was written down.
+
+**A number that is an artefact of your own code looks exactly like a number
+that is a measurement.** The 54.2% feed utilisation was computed by NetBox,
+from real cables, along a correct path. Everything about it was right except
+the allocation it rested on, which was chosen by sort order.
+
+**Say which numbers the tool computed and which you computed.** Phase one's
+20.4 kW carried weight because NetBox derived it from cabling and we only read
+it off. Every cooling figure in phase two is our own arithmetic, and the
+report says so on every row. Presenting the two the same way would have spent
+the credibility of the first on the second.
+
+---
+
 ## The limit that's still there
 
 This generator creates and updates. It **never deletes**.
@@ -219,3 +304,16 @@ would destroy it.
 That is a real gap, named here rather than discovered later by someone assuming the
 spec is the complete truth. **Convergence is guaranteed in one direction only:**
 everything declared will exist and match. Nothing says the reverse.
+
+Phase two is where that stopped being theoretical. Cabling is idempotent by
+checking whether a termination already carries a cable — which makes re-runs
+safe and makes a changed *allocation* invisible. When the busbar allocator was
+corrected, all 216 cables still existed, so the generator left them alone and
+the wrong mapping survived a spec change intact.
+
+The fix was a separate, deliberately narrow tool — `clear_busbar_cables.py`,
+which deletes only cables terminating on a busbar outlet, reports by default
+and destroys only when asked. Keeping deletion out of the generator is worth
+more than the convenience of an in-place fix. But it is now clear what the
+limitation actually costs: **an idempotent creator cannot express a change of
+mind.** It can only be told to add something it has not seen.

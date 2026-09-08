@@ -1,0 +1,14 @@
+metric,h100,gb200,ratio,note
+GPUs,256,576,2.25,
+Compute racks,8,8,1.0,
+GPUs per compute rack,32.0,72.0,2.25,
+kW per compute rack,40.8,119.9,2.94,
+kW per GPU,1.275,1.665,1.31,"the density trade, stated plainly"
+"Compute racks per 1,000 GPUs",31.2,13.9,0.45,
+"kW per 1,000 GPUs",1275,1665,1.31,
+"Compute load, kW",326.4,959.2,2.94,
+Devices modelled,92,314,3.41,
+Feeds per compute rack,3,8,2.67,
+Redundancy scheme,N+1,N+N,,N+1 loses one of three; N+N loses one of two sides
+"Worst surviving feed, %",59.1,86.7,1.47,headroom after the worst credible loss
+Cooling,air,hybrid liquid + air,,"GB200 liquid figures are derived, not computed by NetBox"

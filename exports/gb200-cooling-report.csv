@@ -1,0 +1,11 @@
+site,rack,cooling_capability,rack_capacity_kw,cooling_feeds,cooling_source,intakes,intakes_wired,unwired_at_plant,unwired_unexplained,total_load_kw,liquid_load_kw,air_load_kw,basis,verdict
+Reference Pod 2,G01,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G02,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G03,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G04,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G05,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G06,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G07,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,G08,hybrid,,,,28,28,0,0,119.9,101.9,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,X01,air-only,,"CDU-01-FWS, CDU-02-FWS","Chiller Plant A, Chiller Plant B",2,0,2,0,18.0,0.0,18.0,"derived from power model, not computed by NetBox",NO CAPACITY SET
+Reference Pod 2,SITE TOTAL,,,2 feeds,"2 sources, 1200 kW installed",226,224,2,0,977.2,815.2,162.0,"derived from power model, not computed by NetBox",PASS

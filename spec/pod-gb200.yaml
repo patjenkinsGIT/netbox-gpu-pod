@@ -92,7 +92,24 @@ rack_types:
     # cooled." Declaring liquid-only would overstate what the rack does and
     # would hide the fact that this rack still needs room air handling.
     cooling_capability: hybrid
-    cooling_capacity: 120
+    # NOT DECLARED, and the null is explicit rather than an omission.
+    #
+    # An earlier version set this to 120, reusing NVIDIA's published rack
+    # POWER figure. Those are different quantities: one is how much heat the
+    # rack makes, the other how much it can reject. Setting them equal made
+    # the cooling report compare a number against itself and print
+    # "119.9 of 120.0 PASS" -- a verdict with 0.1 kW of margin that was
+    # arithmetic, not thermal analysis.
+    #
+    # NVIDIA publishes no cooling capacity for this rack. A blank is worse
+    # than a wrong number only if nobody notices the blank; the report says
+    # NO CAPACITY SET, which is the true state of what is known.
+    #
+    # The null is explicit because an omitted field means "don't care" and can
+    # never be detected as drift -- so simply deleting the line would have
+    # left 120 sitting in NetBox indefinitely while this file no longer said
+    # so. Same reason the rPDU input port carries explicit nulls.
+    cooling_capacity: null
     description: Integrated NVL72 rack system -- 72 Blackwell GPUs, 36 Grace CPUs
 
   # Shared with pod.yaml, byte for byte. Used here for the CDU rack only.
@@ -652,8 +669,18 @@ device_roles:
 #   U14-U22  NVLink switch trays 1-9
 #   U23-U31  compute trays 10-18
 #   U32-U35  power shelves 5-8
-#   U36-U37  ToR management switches
-#   U38-U48  free -- cable management and manifold service access
+#   U36-U46  free -- cable management and manifold service access
+#   U47-U48  ToR management switches
+#
+# The ToR switches sit at the TOP. An earlier version put them at U36-U37 with
+# eleven empty units above them, which made "top of rack" a name contradicting
+# its own position -- and in an invented layout there is nothing to appeal to
+# except internal coherence, so that matters more here than it would in a
+# sourced one. Their placement is still a choice, but at least it is now a
+# choice the name agrees with. It also collects the free space into one
+# contiguous band between the top power shelves and the switches, which is
+# where cable management would go -- the same role U38-U41 plays in the
+# air-cooled pod's sourced profile.
 device_groups:
 
   - description: 8x power shelf per rack, split top and bottom
@@ -697,15 +724,16 @@ device_groups:
     position_step: 1
     face: front
 
-  # Present because NVIDIA says the rack contains them. Power deliberately
-  # uncabled -- see the note in power_cabling above.
+  # Present because NVIDIA says the rack contains them. At the top, per the
+  # note in the elevation above. Power deliberately uncabled -- see the note
+  # in power_cabling above.
   - description: 2x ToR management switch per rack
     device_type: sn2201
     role: management-switch
     racks: [G01, G02, G03, G04, G05, G06, G07, G08]
     per_rack: 2
     name_template: "tor-{rack_lower}-{n:02d}"
-    positions: [36, 37]
+    positions: [47, 48]
     face: front
 
   - description: rack coolant manifold, one per rack

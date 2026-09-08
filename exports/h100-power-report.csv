@@ -1,0 +1,14 @@
+site,rack,role,devices,u_used,u_total,feeds,feed_capacity_va,allocated_w,uncabled_w,worst_feed_w,worst_feed_pct,redundancy,surviving_feeds,loss_per_feed_w,loss_util_pct,verdict
+Reference Pod 1,C01,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C02,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C03,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C04,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C05,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C06,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C07,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,C08,Compute,7,38.0,48,3,34501,40800,0,13600,39.4,N+1,2,20400,59.1,PASS
+Reference Pod 1,M01,Management,9,16.0,48,3,34501,2728,0,1082,3.1,N+1,2,1364,4.0,PASS
+Reference Pod 1,N01,Network,9,12.0,48,3,34501,10320,0,3440,10.0,N+1,2,5160,15.0,PASS
+Reference Pod 1,N02,Network,9,12.0,48,3,34501,10320,0,3440,10.0,N+1,2,5160,15.0,PASS
+Reference Pod 1,S01,Storage,9,16.0,48,3,34501,9840,0,3320,9.6,N+1,2,4920,14.3,PASS
+Reference Pod 1,SITE TOTAL,,92,360.0,576,36,,359608,0,13600,39.4,N+1,,,59.1,PASS
