@@ -51,10 +51,10 @@ jobs:
 
     steps:
       - name: Check out this repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check out netbox-docker
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: netbox-community/netbox-docker
           # Pinned. netbox-docker's docker/super_user.py is what creates the
@@ -86,17 +86,41 @@ jobs:
                 SUPERUSER_PASSWORD: "ciEphemeralPassw0rd"
                 SUPERUSER_API_KEY: "${SUPERUSER_API_KEY}"
                 SUPERUSER_API_TOKEN: "${SUPERUSER_API_TOKEN}"
+              healthcheck:
+                # A runner is slower than a laptop and NetBox's first boot runs
+                # migrations and builds the search index before it serves
+                # /login/. Nothing waits on this health state any more (see the
+                # Start step), but leaving it at 180s meant the container was
+                # marked unhealthy mid-boot, which is misleading in the logs.
+                start_period: 420s
           EOF
           cat docker-compose.ci.yml
 
       - name: Start NetBox
         working-directory: netbox-docker
         run: |
+          # `netbox` only -- not the whole stack.
+          #
+          # netbox-worker and housekeeping declare
+          # `depends_on: netbox: condition: service_healthy`, so a bare
+          # `up -d` blocks on the netbox healthcheck and aborts the whole
+          # command when it does not pass in time. On a runner it does not:
+          # first boot runs migrations and builds the search index well past
+          # the healthcheck's patience, and compose reports only
+          # "dependency failed to start", which says nothing about why.
+          #
+          # Naming the service starts its own dependencies (postgres, valkey)
+          # and waits on THEIR health, which is quick, then returns without
+          # gating on netbox itself. Readiness is then established by the poll
+          # below, which asks the question this job actually cares about --
+          # does the API answer 200 -- rather than whether a login page
+          # renders. The worker and housekeeping containers do no work here;
+          # nothing in this job queues a background job.
           docker compose \
             -f docker-compose.yml \
             -f docker-compose.override.yml \
             -f docker-compose.ci.yml \
-            up -d
+            up -d netbox
 
       - name: Wait for the API
         working-directory: netbox-docker
@@ -106,6 +130,15 @@ jobs:
           # start_period, so the budget here is deliberately generous.
           TOKEN="nbt_${SUPERUSER_API_KEY}.${SUPERUSER_API_TOKEN}"
           for i in $(seq 1 60); do
+            # Fail fast if the container died rather than spending ten minutes
+            # polling something that is never coming back. A crash in
+            # super_user.py looks identical to a slow boot from the outside,
+            # and the two want very different responses.
+            if [ -z "$(docker compose ps -q --status running netbox)" ]; then
+              echo "netbox container is not running -- it exited during startup"
+              docker compose logs --no-color netbox | tail -60
+              exit 1
+            fi
             code=$(curl -s -o /dev/null -w '%{http_code}' \
               --connect-timeout 5 --max-time 10 \
               -H "Authorization: Bearer ${TOKEN}" \
@@ -184,7 +217,7 @@ jobs:
 
       - name: Upload exports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: exports
           path: exports/*.csv
