@@ -1,5 +1,11 @@
 # Reference GPU Pod — DCIM Model & Commissioning Package
 
+[![build](https://github.com/patjenkinsGIT/netbox-gpu-pod/actions/workflows/build.yml/badge.svg)](https://github.com/patjenkinsGIT/netbox-gpu-pod/actions/workflows/build.yml)
+
+*Every push rebuilds both pods from an empty NetBox, re-runs the exports, and
+asserts the figures quoted below. The badge is the claim that the numbers on
+this page are reproduced rather than remembered.*
+
 NetBox models of **two NVIDIA DGX SuperPOD scalable units**, built from published
 reference architecture, with one generator that reproduces either from a YAML spec:
 

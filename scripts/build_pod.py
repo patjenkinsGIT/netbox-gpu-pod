@@ -1826,6 +1826,11 @@ def main():
         default=os.path.join(REPO_ROOT, "spec", "pod.yaml"),
         help="path to the pod spec (default: spec/pod.yaml)",
     )
+    parser.add_argument(
+        "--exit-code",
+        action="store_true",
+        help="with --dry-run, exit 2 if anything would change (for CI)",
+    )
     args = parser.parse_args()
 
     with open(args.spec) as fh:
@@ -1868,6 +1873,22 @@ def main():
         return 1
 
     run.summary()
+
+    # Idempotency as a testable property rather than a claim.
+    #
+    # "Run it twice and the second run changes nothing" has been true since S4
+    # and was verified by a person reading the output. With --exit-code a
+    # machine can verify it on every commit: a converged model exits 0, any
+    # pending create or update exits 2. Same idea as terraform plan's
+    # -detailed-exitcode, and it is the difference between a property the
+    # README asserts and one the repo proves.
+    if args.exit_code and args.dry_run and (run.planned or run.planned_updates):
+        print(
+            f"\nDRIFT: {run.planned} to create, {run.planned_updates} to update",
+            file=sys.stderr,
+        )
+        return 2
+
     return 0
 
 

@@ -1,0 +1,195 @@
+# Rebuild both pods from empty, on every push, and check the published figures.
+#
+# The README says "clone the repo, run the script, get the pod." Until now a
+# reader had to take that on trust, and every number in the docs came out of a
+# CSV that one person read once. This job does what that reader would do --
+# stands up a bare NetBox, runs the generator against both specs, exports the
+# reports, and asserts the figures the docs quote.
+#
+# It proves three things a person cannot keep proving by hand:
+#   1. The specs build a complete model against a genuinely empty NetBox.
+#   2. The generator is idempotent -- a second run changes nothing (exit 2 if
+#      it would).
+#   3. The committed exports are exactly what the code produces, not a stale
+#      snapshot from whenever someone last remembered to regenerate them.
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Throwaway credentials for an ephemeral container.
+  #
+  # These are in the clear deliberately and safely: the instance lives for the
+  # length of one job, binds only to loopback inside the runner, holds nothing
+  # but a model of a fictional data center, and is destroyed with the runner.
+  # Nothing here is a credential to any real system, and the values must be
+  # known to the workflow in advance -- that is the entire point of
+  # netbox-docker's non-interactive superuser bootstrap.
+  #
+  # Lengths matter: netbox-docker's own test harness uses a 12-character key
+  # and a 50-character token, and NetBox 4.7 composes them into the V2
+  # credential "nbt_<key>.<token>" used with the Bearer scheme.
+  SUPERUSER_API_KEY: ciephemeral1
+  SUPERUSER_API_TOKEN: ciephemeraltokennotasecret012345678901234567890123
+  NETBOX_URL: http://127.0.0.1:8000
+
+jobs:
+  reproduce:
+    name: rebuild both pods from empty
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+
+      - name: Check out netbox-docker
+        uses: actions/checkout@v4
+        with:
+          repository: netbox-community/netbox-docker
+          # Pinned. netbox-docker's docker/super_user.py is what creates the
+          # API token, so an unpinned clone would let an upstream release
+          # change this job's bootstrap without any commit here.
+          ref: 5.1.0
+          path: netbox-docker
+
+      - name: Configure netbox-docker
+        working-directory: netbox-docker
+        run: |
+          # The same two files the README tells a human to copy, so CI
+          # exercises the documented setup rather than a private one.
+          cp ../env-example/.env .
+          cp ../env-example/docker-compose.override.yml .
+
+          # env/netbox.env ships SKIP_SUPERUSER=true. A compose `environment:`
+          # block beats `env_file:`, so this flips it without editing a file
+          # that belongs to the upstream project.
+          # Unquoted heredoc so the shell substitutes the two values from the
+          # workflow env. Nothing else in this block contains a '$'.
+          cat > docker-compose.ci.yml <<EOF
+          services:
+            netbox:
+              environment:
+                SKIP_SUPERUSER: "false"
+                SUPERUSER_NAME: "admin"
+                SUPERUSER_EMAIL: "admin@example.com"
+                SUPERUSER_PASSWORD: "ciEphemeralPassw0rd"
+                SUPERUSER_API_KEY: "${SUPERUSER_API_KEY}"
+                SUPERUSER_API_TOKEN: "${SUPERUSER_API_TOKEN}"
+          EOF
+          cat docker-compose.ci.yml
+
+      - name: Start NetBox
+        working-directory: netbox-docker
+        run: |
+          docker compose \
+            -f docker-compose.yml \
+            -f docker-compose.override.yml \
+            -f docker-compose.ci.yml \
+            up -d
+
+      - name: Wait for the API
+        working-directory: netbox-docker
+        run: |
+          # A poll, not a fixed sleep. First boot runs migrations and builds
+          # the search index; the repo's override sets a 180s healthcheck
+          # start_period, so the budget here is deliberately generous.
+          TOKEN="nbt_${SUPERUSER_API_KEY}.${SUPERUSER_API_TOKEN}"
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' \
+              --connect-timeout 5 --max-time 10 \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "${NETBOX_URL}/api/status/" || true)
+            if [ "$code" = "200" ]; then
+              echo "NetBox answered 200 after ~$((i * 10))s"
+              exit 0
+            fi
+            echo "  waiting (${i}/60, last code: ${code:-none})"
+            sleep 10
+          done
+          echo "NetBox never became ready"
+          docker compose logs --no-color netbox | tail -80
+          exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write .env
+        run: |
+          printf 'NETBOX_URL=%s\nNETBOX_TOKEN=nbt_%s.%s\n' \
+            "${NETBOX_URL}" "${SUPERUSER_API_KEY}" "${SUPERUSER_API_TOKEN}" > .env
+
+      - name: Preflight
+        run: python scripts/check_connection.py
+
+      # Against a genuinely empty NetBox. This step exists because it used to
+      # fail: build_devices looked the site up and dereferenced it, which was
+      # safe only because the site had always been created by hand first. It
+      # went unnoticed for two phases.
+      - name: Dry run both specs against an empty NetBox
+        run: |
+          python scripts/build_pod.py --dry-run
+          python scripts/build_pod.py --spec spec/pod-gb200.yaml --dry-run
+
+      - name: Build Reference Pod 1
+        run: python scripts/build_pod.py
+
+      - name: Build Reference Pod 2
+        run: python scripts/build_pod.py --spec spec/pod-gb200.yaml
+
+      # The claim the whole generator rests on, checked by a machine rather
+      # than by a person reading "created: 0" and believing it.
+      - name: Assert both pods converge
+        run: |
+          python scripts/build_pod.py --dry-run --exit-code
+          python scripts/build_pod.py --spec spec/pod-gb200.yaml --dry-run --exit-code
+
+      - name: Export reports
+        run: python scripts/export_reports.py
+
+      - name: Verify the published figures
+        run: python scripts/verify_exports.py
+
+      # Proves the committed CSVs are what the code produces today, not a
+      # snapshot from whenever someone last regenerated them.
+      #
+      # The cable schedules are excluded on purpose: their cable_id column
+      # comes from a database sequence, so it differs between builds while
+      # describing an identical fabric. Every other report is deterministic,
+      # which is why they can be diffed at all.
+      - name: Assert committed exports match a fresh build
+        run: |
+          git diff --exit-code -- \
+            exports/h100-power-report.csv \
+            exports/h100-rail-map.csv \
+            exports/gb200-power-report.csv \
+            exports/gb200-cooling-report.csv \
+            exports/pod-comparison.csv
+
+      - name: Upload exports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: exports
+          path: exports/*.csv
+
+      - name: NetBox logs on failure
+        if: failure()
+        working-directory: netbox-docker
+        run: docker compose logs --no-color --tail 200
