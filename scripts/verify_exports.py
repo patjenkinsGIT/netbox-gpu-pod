@@ -15,6 +15,14 @@ The figures below are the ones quoted in README.md and docs/design-notes.md. If
 a number changes for a good reason, this file is where the change gets
 acknowledged rather than where it gets discovered.
 
+The last section closes that loop the other way. Asserting the exports while
+the docs quote those figures from memory left a gap the badge did not cover:
+an edit to a number in README.md kept CI green while the page went wrong. So
+the doc claims are now checked against the values this run read out of the
+exports -- not against the constants above -- which chains the whole thing
+together: a pod rebuilt from empty produces the CSVs, the CSVs produce these
+figures, and the figures must be the ones the docs print.
+
 Usage:
     python scripts/verify_exports.py
     python scripts/verify_exports.py --dir exports
@@ -96,6 +104,21 @@ def rack_rows(rows):
 
 def kw(row, field="allocated_w"):
     return round(int(row[field]) / 1000.0, 1)
+
+
+def doc_text(name):
+    """A doc as one whitespace-normalised line.
+
+    Collapsing whitespace matters: these files are hard-wrapped at 79 columns,
+    so "359.6 kW" can sit either side of a line break and a naive substring
+    check would fail on reflowed prose rather than on a wrong number. The
+    check should fire when a figure changes, not when a paragraph does.
+    """
+    path = os.path.join(REPO_ROOT, name)
+    if not os.path.exists(path):
+        raise SystemExit(f"FAIL: missing doc {path}")
+    with open(path) as fh:
+        return " ".join(fh.read().split())
 
 
 def main():
@@ -187,6 +210,65 @@ def main():
             float(comp["Compute racks per 1,000 GPUs"]["h100"]), 31.2)
     c.check("racks per 1,000 GPUs, GB200",
             float(comp["Compute racks per 1,000 GPUs"]["gb200"]), 13.9)
+
+    # ------------------------------------------- the figures as the docs print them
+    #
+    # Every literal below is rendered from a value read out of an export a few
+    # lines above, never typed. A figure that moves therefore fails here in the
+    # same run that reports the new value, and the fix is to update the prose.
+    #
+    # Whole-pod totals are the ones worth the most: README.md states 21 racks,
+    # 406 devices, 1,314 cables and 1,336.8 kW, which are sums across two
+    # reports that nothing else in this file checks. They were arithmetic done
+    # once, by hand, in a sentence.
+    c.section("Published figures, as the docs print them")
+
+    p1_kw, p2_kw = kw(total), kw(total2)
+    p1_worst_pct = float(worst["loss_util_pct"])
+    claims = [
+        ("README.md", "pod 1 load", f"{p1_kw} kW"),
+        ("README.md", "pod 2 load", f"{p2_kw} kW"),
+        ("README.md", "both pods, racks",
+         f"{len(racks) + len(racks2)} racks"),
+        ("README.md", "both pods, devices",
+         f"{int(total['devices']) + int(total2['devices'])} devices"),
+        ("README.md", "both pods, cables",
+         f"{len(cables) + len(cables2):,} cables"),
+        ("README.md", "both pods, load", f"{p1_kw + p2_kw:,.1f} kW"),
+        ("README.md", "N-1 per-feed VA",
+         f"{int(worst['loss_per_feed_w']):,} VA"),
+        ("README.md", "N-1 utilisation", f"{p1_worst_pct}%"),
+        ("README.md", "pod 2 devices", f"{int(total2['devices'])} devices"),
+        ("README.md", "pod 2 power cables", f"{len(cables2)} power cables"),
+        ("README.md", "NVL72 rack load", f"{kw(nvl72[0])}"),
+        ("README.md", "loss-of-side utilisation",
+         f"{float(nvl72[0]['loss_util_pct'])}%"),
+        ("README.md", "uncabled draw", f"{int(total2['uncabled_w']):,} W"),
+        ("README.md", "cooling intakes", f"{int(ctotal['intakes'])} cooling"),
+        ("docs/design-notes.md", "pod 2 load", f"{p2_kw} kW"),
+        ("docs/design-notes.md", "pod 2 power cables",
+         f"{len(cables2)} power cables"),
+        ("docs/design-notes.md", "derived liquid load",
+         f"{float(ctotal['liquid_load_kw'])} kW"),
+        ("docs/design-notes.md", "N-1 per-feed kW",
+         f"{int(worst['loss_per_feed_w']) / 1000:.1f} kW"),
+        ("docs/design-notes.md", "N-1 utilisation", f"{p1_worst_pct}%"),
+        ("docs/design-notes.md", "loss-of-side utilisation",
+         f"{float(nvl72[0]['loss_util_pct'])}%"),
+        ("docs/design-notes.md", "NVL72 rack load", f"{kw(nvl72[0])}"),
+        ("docs/design-notes.md", "uncabled draw",
+         f"{int(total2['uncabled_w']):,} W"),
+        ("docs/roadmap.md", "pod 1 load", f"{p1_kw} kW"),
+        ("docs/roadmap.md", "pod 2 load", f"{p2_kw} kW"),
+        ("docs/roadmap.md", "uncabled draw", f"{int(total2['uncabled_w']):,} W"),
+    ]
+
+    texts = {}
+    for name, label, literal in claims:
+        if name not in texts:
+            texts[name] = doc_text(name)
+        found = literal if literal in texts[name] else "NOT FOUND"
+        c.check(f"{name}: {label}", found, literal)
 
     return 1 if c.report() else 0
 

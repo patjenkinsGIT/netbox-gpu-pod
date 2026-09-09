@@ -1,0 +1,46 @@
+# Check the published figures against the committed exports.
+#
+# The companion to build.yml, and the reason that one can afford to skip
+# documentation-only pushes. This job never starts NetBox: it reads the CSVs
+# already in the repository and asserts both the headline figures and the
+# numbers README.md and the docs print in prose. Seconds, not sixteen minutes.
+#
+# The division of labour between the two:
+#
+#   build.yml  proves the exports are what the generator produces, by
+#              rebuilding both pods from an empty NetBox. Skips docs-only
+#              pushes, because prose cannot change a generated CSV.
+#   docs.yml   proves the docs quote what the exports say. Runs on everything,
+#              because a one-character edit to a number in README.md is
+#              exactly the failure this exists to catch.
+#
+# So an edit to a figure fails here in under a minute, and an edit to the
+# generator still gets the full rebuild.
+name: docs
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  figures:
+    name: published figures match the exports
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Verify the published figures
+        run: python scripts/verify_exports.py

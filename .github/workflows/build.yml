@@ -14,9 +14,20 @@
 #      snapshot from whenever someone last remembered to regenerate them.
 name: build
 
+# Documentation-only pushes skip the rebuild: prose cannot change what the
+# generator produces, and the run costs ~16 minutes. A commit that touches both
+# docs and code still runs -- paths-ignore skips only when every changed file
+# matches. exports/ is deliberately not ignored, since the committed CSVs are
+# one of the things this job checks. Use workflow_dispatch to force a run.
 on:
   push:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
